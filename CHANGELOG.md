@@ -4,6 +4,102 @@ Reverse-chronological. Each entry is a version bump.
 
 ---
 
+## 1.1.0 — 2026-05-24 — Pattern 3 (Hybrid) gets a concrete CTO-style example
+
+Minor bump per the post-v1.0 versioning intent ("Minor (1.0.x → 1.1.0)
+— additive: ... new shape pattern documented in SHAPE.md"). Adds a
+documented canonical example for Pattern 3 (Hybrid) which v1.0.0
+left as "none yet."
+
+### Origin
+
+`claude-orchestrator` (`RasaOS/claude-orchestrator`, absorbed
+2026-05-22 from `ChazzCoin/claude-orchestrator @ 0f678c5`) was a
+pre-canon CTO-orchestrator template that we'd been deferring on
+drift-fixing for many sessions. User direction 2026-05-24: "i want
+to extract claude-orchestrators core structure into orchestrator.core
+and then remove claude-orchestrator."
+
+Rather than canon-shape-migrating claude-orchestrator (a multi-hour
+drift fix), we extracted **the pattern it represented** — a
+multi-repo coordinator within one operational domain — and
+documented it here as the canonical Pattern 3 (Hybrid) example.
+Implementation code stays archived on `RasaOS/claude-orchestrator`
+(GitHub-archived, read-only); future Hybrid-pattern orchestrators
+can read the archive for reference but should fork from this
+template + adopt the documented pattern.
+
+### Changed
+
+- **`content/SHAPE.md` Pattern 3 (Hybrid) section** substantially
+  expanded:
+  - Removed "no examples yet" placeholder
+  - Added `claude-orchestrator` as canonical example (extracted v1.1.0)
+  - Documented "structure-shaped + domain-shaped" framing — "an
+    orchestrator that sits ABOVE a set of related projects, BUT
+    all within one operational ownership"
+  - Concrete file-layout example showing CTO-orchestrator's `content/`
+    (state/sub-repos/, decisions/, proposals/, risks/, governance/,
+    templates/sub-repo-*, plus 13 orchestration skills)
+  - Documented the **sub-projects registry pattern** (central
+    `content/state/sub-repos/` directory with a `bin/register` skill
+    that adds new sub-projects; skills like `status`, `audit`,
+    `roll-up` iterate over the registry)
+  - Capability-namespacing guidance: combine `substrate.*` (cross-repo
+    management) + `<vertical>.*` (vertical-specific)
+  - `seed/` typically heaviest of the three patterns (substrate
+    setup, governance docs)
+  - `bin/` often rich (register, refresh, validate-internal-links,
+    render-active-notice, etc.)
+  - Install posture: YES (installs into a substrate-root umbrella repo)
+  - When-to-use + when-NOT-to-use guidance
+- **Pattern selection summary table** added at the end of SHAPE.md
+  for quick "which pattern do I use" lookup.
+- **`rasa.json#version`**: 1.0.0 → 1.1.0
+- **`VERSION`**: 1.0.0 → 1.1.0
+- **CHANGELOG.md** (this file) — this entry
+
+### What's NOT extracted from claude-orchestrator
+
+The extraction is **documentation only** — the pattern is captured in
+SHAPE.md. We deliberately did NOT pull in claude-orchestrator's
+implementation:
+
+- **12 bin scripts** (register, refresh, setup, contacts, send-email,
+  open-orch-pr, preferences-check, render-active-notice, repo-config,
+  validate-internal-links, validate-task-spec) — too CTO-specific.
+  Forks adopting Pattern 3 can re-author from the pattern docs +
+  consult the archived claude-orchestrator repo for reference.
+- **38 bootstrap (seed) templates** (company-profile, tech-vision,
+  tech-principles, security-posture, slos, etc.) — too CTO-specific.
+  Pattern-3 forks may build their own seed/ heavy with their
+  vertical's bootstrap files.
+- **32 kit (element) entries** (skill folders, state templates,
+  rules) — same. Forks adopt their own implementations of the
+  pattern.
+
+This keeps the template lean. Forks understand the SHAPE without
+inheriting CTO-specific implementation choices that would have to
+be re-customized anyway.
+
+### Backwards compatibility
+
+Existing forks pinning to `rasa.orchestrator.core v1.0.0` are
+unaffected. v1.1.0 only adds documentation (no schema change, no
+new required files, no new content/, no new bin/). Forks may
+opportunistically pull v1.1.0 by running `git pull` against the
+upstream + comparing SHAPE.md if they want the Pattern 3 guidance.
+
+### Substrate state implication
+
+The retirement of `claude-orchestrator` (concurrent commit, separate
+repo) reduces RasaOS org from 11 → 10 active repos. The archived
+`RasaOS/claude-orchestrator` remains accessible read-only as a
+historical reference for the CTO-orchestrator pattern this v1.1.0
+documents.
+
+---
+
 ## 1.0.0 — 2026-05-24 — LOCKED unified shape
 
 First stable lock-down. Parallel work to `rasa.domain.core v1.0.0`
