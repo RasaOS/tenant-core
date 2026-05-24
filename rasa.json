@@ -1,0 +1,79 @@
+{
+  "$schema": "https://rasa-os.github.io/schema/rasa.schema.v1.json",
+  "contract_version": "1.3.0",
+  "name": "rasa.orchestrator.core",
+  "version": "1.0.0",
+  "kind": "orchestrator",
+  "aliases": [
+    "orchestrator-core",
+    "rasa-orchestrator-template",
+    "orchestrator-template"
+  ],
+  "description": "RasaOS Orchestrator · Core. The unified canonical template every orchestrator Element follows. v1.0.0 ships the SHAPE every orchestrator shares — canon-required files (§4) + Apache-2.0 LICENSE + content/SHAPE.md documenting the two orchestrator shape patterns (domain-shaped + structure-shaped) + opt-in scaffold subdirs.\n\nFork this to author a new orchestrator. Decide upfront which shape fits: **domain-shaped** orchestrators (rasa.orchestrator.firm, .clinic, .company) coordinate across instances WITHIN one vertical; **structure-shaped** orchestrators (rasa.orchestrator.workspace) coordinate across siblings ACROSS a substrate, orthogonal to domain. Delete SHAPE.md from your fork; replace with content/README.md.\n\nNotable shape note: bin/init AND seed/ are OPTIONAL for orchestrators. Structure-shaped orchestrators often don't install — they operate as a session contract. The template ships both bin/ + seed/ as starter scaffold; forks delete what they don't need (vs domains where bin/init is typically required).\n\nDistinct from rasa.core (kind: core, the L1 shared bones every Element depends on). orchestrator-core is the template for the orchestrator KIND; rasa.core is the L1 dependency. Different concerns; both named 'core' for canonical positioning.",
+  "source": {
+    "repo": "https://github.com/RasaOS/orchestrator-core",
+    "branch": "main"
+  },
+  "tier": "Pro",
+  "capabilities": [],
+  "permissions": [
+    "fs:write",
+    "shell:exec"
+  ],
+  "requires": {},
+  "rasa": {
+    "role": "orchestrator-template",
+    "shape_pattern": "agnostic",
+    "note": "Canonical orchestrator template per canon ELEMENT_CONTRACT.md v1.3+ §4 (required files) + §7 (install policies). v1.0.0 is the locked-down shape: forks may pin to this version and absorb later minor bumps as additive. shape_pattern='agnostic' here flags that this template does not commit to domain-shaped or structure-shaped; forks set their own. See content/SHAPE.md for the choice. Paired with rasa.domain.core v1.0.0 which serves the same role for the domain kind."
+  },
+  "element": {
+    "description": "Files mirrored into the install target per canon ELEMENT_CONTRACT.md §7. v1.0.0 ships all of these as opt-in scaffold — registered for check-manifest coverage but not installed automatically. Forks change policies as they populate content/, OR delete entries entirely for structure-shaped orchestrators that don't install at all.",
+    "files": [
+      {
+        "from": "content/SHAPE.md",
+        "to": "content/SHAPE.md",
+        "policy": "opt-in",
+        "note": "Fork-time guide explaining domain-shaped vs structure-shaped orchestrator patterns. Not installed into consumer projects. Forks should delete this from their copy and replace with content/README.md describing what's actually shipped."
+      },
+      {
+        "from": "content/skills/",
+        "to": ".claude/skills/",
+        "policy": "opt-in",
+        "note": "Orchestration skill scaffold. Forks adopting this scaffold populate + change policy to directory-mirror. Structure-shaped orchestrators that don't install may delete this entry + the directory."
+      },
+      {
+        "from": "content/rules/",
+        "to": ".claude/",
+        "policy": "opt-in",
+        "note": "Orchestration rules scaffold. Forks adopting populate + change policy. Canonical install target is .claude/ root (rules install flat per domain-code precedent)."
+      },
+      {
+        "from": "content/agents/",
+        "to": ".claude/agents/",
+        "policy": "opt-in",
+        "note": "Claude subagent definitions scaffold. Forks adopting populate + change policy to directory-mirror."
+      }
+    ]
+  },
+  "seed": {
+    "description": "One-time files copied at install only. Per canon ELEMENT_CONTRACT.md §7. OPTIONAL for orchestrators (vs typical-required for domains). Structure-shaped orchestrators that don't install via bin/init can ignore or delete the seed/ folder entirely. The template ships both canonical templates so forks have starting material if they DO install.",
+    "files": [
+      {
+        "from": "seed/CLAUDE.md.template",
+        "to": "CLAUDE.md",
+        "policy": "skip-if-exists",
+        "note": "Per-project Claude session contract. Lives in install-target root; project-owned forever. Placeholder-free (Element identity lives in .claude/rasa.lock.json — current install-policy taxonomy doesn't substitute placeholders in skip-if-exists files; flagged in domain-core v0.1.0 AUDIT)."
+      },
+      {
+        "from": "seed/rasa.lock.json.template",
+        "to": ".claude/rasa.lock.json",
+        "policy": "init-only-with-sha",
+        "note": "Stamped with Element HEAD commit SHA at init time. Lockfile shape per canon Spec §6. Substitutes {{ELEMENT_NAME}}, {{ELEMENT_KIND}}, {{ELEMENT_VERSION}}, {{ELEMENT_REPO}}, {{ELEMENT_BRANCH}}, {{ELEMENT_SHA}}, {{TODAY}} placeholders via bin/init's init-only-with-sha handler."
+      }
+    ]
+  },
+  "scaffold": {
+    "description": "Empty directories created at init. v1.0.0 ships none — forks add as needed.",
+    "directories": []
+  }
+}
