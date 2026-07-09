@@ -12,6 +12,59 @@ shipped.
 
 ---
 
+## Co-located tenant workspace (SA-022)
+
+A tenant MAY be a **co-located workspace** (canon v1.4.0 CW-001 — a
+flavor, not a mandate; the other tenant flavor is the SA-019
+holding-folder / canon-author-root model). A co-located workspace is a
+thin container directory (just `rasa.json` + `CLAUDE.md`) holding
+**member repos** as co-located **siblings** inside it. Each member is
+its own git repo with its own remote, named `<tenant-namespace>-<name>`.
+**When a tenant uses this flavor, the orchestrator instance IS one of
+those member repos** (`<ns>-cto`, etc.), co-located alongside the
+codebase members it coordinates — it does NOT clone them into a
+gitignored `repos/<name>/` subdir or a `.rasa/holding/` folder:
+
+```
+vsi-ops/            # the tenant — thin: rasa.json + CLAUDE.md, gitignores every member
+├── vsi-cto/        # the ORCHESTRATOR INSTANCE — itself a member repo
+├── vsi-web/        # codebase member repo
+├── vsi-ios/        # codebase member repo
+└── vsi-devops/     # infra codebase member (rasa.domain.devops installed into it)
+```
+
+The locks (canon v1.4.0 CW-001..CW-006):
+
+- **CW-001** — a tenant MAY be a co-located workspace; each member is
+  its own git repo; the tenant gitignores every member. Git-per-repo
+  IS the sync (full clones, no holding folder).
+- **CW-002** — member naming `<tenant-namespace>-<name>`, folder + repo
+  dashed.
+- **CW-003** — the orchestrator instance IS a member repo (`<ns>-cto`),
+  co-located with the codebases it coordinates — NOT at the tenant
+  root, NOT in a `.rasa/holding/` folder.
+- **CW-004** — the tenant declares `tenant.members[] = { name, role,
+  git_remote, installed_element? }`.
+- **CW-005** — orchestrators coordinate co-located members and MAY
+  create + register new ones (scaffold `<ns>-<name>`, git init,
+  `gh repo create`, register). Applies to **all** orchestrator
+  patterns below.
+- **CW-006** — canon Elements install INTO member repos (codebase
+  member ← `rasa.domain.*`; orchestrator member ← `rasa.orchestrator.*`).
+  Members are install targets; Elements are sources.
+
+**What this means for the patterns:** in a co-located tenant, wherever
+a pattern below speaks of "sub-projects," "sub-repos," or a
+"recommended sibling layout," that resolves to **co-located member
+repos** — the orchestrator reaches its members at the relative path
+`../<ns>-<name>` from its own member root (`<ns>-cto/`). The "registry"
+a Pattern-3 orchestrator owns is the tenant's `members[]` plus its own
+`state/` records of those siblings. (Multi-repo coordination is
+Pattern-3 territory; a Pattern-1 orchestrator coordinates instances
+*within* its own member repo — see below.)
+
+---
+
 ## Pattern 1 — Domain-shaped orchestrator
 
 **Examples in canon:** `rasa.orchestrator.firm` (law firm), `rasa.orchestrator.clinic`
@@ -43,9 +96,14 @@ content/
 `engineering.cross-project.standup`.
 
 **Install posture:** TYPICALLY installs via bin/init into a
-domain-specific tenant (the firm-home, the clinic-home). Pairs with
-a domain Element (rasa.domain.legal + rasa.orchestrator.firm in a
-law-firm tenant).
+domain-specific tenant (the firm-home, the clinic-home). In a
+co-located tenant (SA-022) the orchestrator is a member repo
+(`<tenant>/<ns>-firm/`) and `rasa.domain.legal` installs INTO it (or
+into a paired codebase member), pairing domain + orchestrator inside
+one law-firm tenant. It coordinates its instances (matters, patients)
+*within* its own member repo — instances are not separate repos. If
+the firm's work genuinely spans multiple repos, that's the Pattern-3
+hybrid (co-located member siblings at `../<ns>-<name>`), not Pattern 1.
 
 **`seed/`:** typically has CLAUDE.md.template + rasa.lock.json.template
 plus possibly an INSTANCES.md.template (firm's matters index,
@@ -83,14 +141,23 @@ example (`rasa.orchestrator.workspace v0.2.0`) uses `canon.*`,
 four families.
 
 **Install posture:** OFTEN doesn't install via bin/init —
-structure-shaped orchestrators operate AS a session contract at the
-workspace/tenant root (the workspace `CLAUDE.md` IS the
-orchestrator's working contract). The `rasa.json` declares
-identity + capabilities; no toolkit gets mirrored into a `.claude/`.
+structure-shaped orchestrators operate AS a session contract. Two
+seats, depending on the tenant flavor it coordinates:
 
-If a structure-shaped orchestrator DOES install (e.g., to bootstrap
-a fresh tenant with substrate-management scaffolding), it'll use
-bin/init like any other Element.
+- **At the tenant/workspace root** (SA-019 canon-author flavor) — the
+  orchestrator's contract IS the tenant-root `CLAUDE.md`, coordinating
+  the Elements/repos checked out under that root. This is the
+  `rasa.orchestrator.workspace` / `rasa.tenant.rasaos` reference case,
+  where members are full clones directly under the root (not `<ns>-`
+  siblings), synced git-per-repo.
+- **As a co-located member** (`<ns>-cto/`) in a co-located tenant
+  (SA-022) — it coordinates its member siblings at `../<ns>-<name>`
+  and MAY create + register new members (CW-005).
+
+Either way the `rasa.json` declares identity + capabilities. A
+structure-shaped orchestrator that DOES install (e.g., to bootstrap a
+fresh tenant with substrate scaffolding) uses bin/init like any other
+Element — under SA-022 the install target is its own member repo.
 
 **`seed/`:** often empty or absent. The "install target" of a
 structure-shaped orchestrator is the workspace folder itself, which
@@ -157,17 +224,26 @@ content/
 └── reviews/                         # review cycles
 ```
 
-**Sub-projects registry** (the substrate concept):
+**Member registry** (the substrate concept):
 
-A central `content/state/sub-repos/` directory holds one .md per
-registered sub-project. A `bin/register` script (or equivalent
-skill) adds new sub-projects to this registry. Skills like
-`status`, `audit`, `roll-up` iterate over the registry to operate
-across the substrate.
+Under SA-022 the "sub-projects" ARE the tenant's co-located member
+repos. A central `content/state/sub-repos/` directory holds one .md
+per registered member (mirroring the tenant's `members[]`), each a
+sibling of the orchestrator at `../<ns>-<name>`. A `bin/register`
+script (or equivalent skill) adds new members: scaffold
+`<ns>-<name>`, git init, `gh repo create`, register (CW-005). Skills
+like `status`, `audit`, `roll-up` iterate over the registry to
+operate across the co-located siblings.
+
+> **Follow-up (code):** `bin/register` currently clones into a
+> gitignored `repos/<name>/` subdir. To match SA-022 it must instead
+> create the member as a co-located sibling at `../<ns>-<name>` (its
+> own repo + remote), not a subdir clone. Note as a bin/ change, not
+> yet done.
 
 This is the "macro architectural truth across one operational
 domain's stack" pattern. The orchestrator owns the registry; the
-sub-projects own their own implementations.
+members own their own implementations.
 
 **`capabilities[]` shape:** combine substrate-management caps with
 vertical-specific caps:
@@ -190,16 +266,21 @@ seeded files set up the substrate's own scaffolding:
 **`bin/`:** often rich — operational scripts for substrate
 management:
 
-- `bin/register` — add a new sub-project to the registry
+- `bin/register` — add a new co-located member to the registry
+  (scaffold `<ns>-<name>` sibling + git init + `gh repo create`; see
+  the code follow-up above)
 - `bin/refresh` — refresh substrate state across all sub-repos
 - `bin/validate-internal-links`, `bin/validate-task-spec` — gates
 - `bin/render-active-notice` — generate cross-repo notices
 - `bin/send-email`, `bin/contacts` — communication (CTO-specific)
 
-**Install posture:** YES — Pattern 3 orchestrators install into a
-substrate root (e.g., the company's umbrella repo) where the
-registry + state files live. Different from Pattern 2
-(structure-shaped) which often doesn't install at all.
+**Install posture:** YES — under SA-022 a Pattern 3 orchestrator
+installs into its own member repo (`<ns>-cto/`), co-located inside
+the tenant alongside the codebase members it coordinates (NOT at the
+tenant root). Its registry + state files live in that member; the
+codebase members it spans are siblings at `../<ns>-<name>`, each with
+its own remote. Different from Pattern 2 (structure-shaped) which
+often doesn't install at all.
 
 **When to use it:** when the orchestrator needs to coordinate
 **multiple sub-projects** all owned by the same operational entity
