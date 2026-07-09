@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""
+bin/scan-drift — grep the substrate for legacy vocabulary + stale
+canon paths. Distinguishes real-drift (kit-authored files) from
+inherited-content (installed `.claude/` toolkit content, which
+shipped from upstream and isn't this Element's drift to fix).
+
+Reports per-file with a category label.
+
+Categories scanned:
+  legacy-vocab        kit, MANIFEST.json, foundation.json, bootstrap/, manifest contract
+  stale-canon-path    rasaos-canon (pre-canon-move), rAI/rasa-os/<elem> without elements/
+  stale-element-path  similar for any Element folder reference
+
+Targets scanned (per CLI args):
+  --elements          elements/<*>/ (excluding inherited content)
+  --canon             canon/ (only post-locked versions, exclude in-progress)
+  --workspace-root    workspace root files (CLAUDE.md, README.md, etc.)
+  --all               all of the above (default)
+
+Exit: 0 if no drift; 1 if any drift found.
+
+Cross-platform: pure Python standard library + git.
+"""
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+LEGACY_VOCAB = {
+    "kit-folder": re.compile(r"\bkit/"),
+    "MANIFEST.json": re.compile(r"\bMANIFEST\.json\b"),
+    "foundation.json": re.compile(r"\bfoundation\.json\b"),
+    "bootstrap/": re.compile(r"\bbootstrap/"),
+    "manifest contract": re.compile(r"\bmanifest contract\b", re.IGNORECASE),
+}
+
+# Stale canon paths: rasaos-canon (pre-move) + rAI/rasa-os/<elem-name>
+# without elements/ prefix (pre-elements/ restructure)
+STALE_PATHS = {
+    "rasaos-canon": re.compile(r"\brasaos-canon\b"),
+    "pre-elements-domain-code": re.compile(r"rAI/rasa-os/domain-code\b(?!/elements)"),
+    "pre-elements-domain-legal": re.compile(r"rAI/rasa-os/domain-legal\b(?!/elements)"),
+    "pre-elements-orchestrator-workspace": re.compile(r"rAI/rasa-os/orchestrator-workspace\b(?!/elements)"),
+}
+
+# Files to scan (text-shaped)
+SCAN_EXTENSIONS = {".md", ".json", ".html", ".sh", ".py", ".yaml", ".yml", ".toml", ".txt", ""}
+# (empty extension covers extensionless files like .gitignore, LICENSE, VERSION)
+
+# Inherited-content directories — files here shipped from upstream
+# Elements; not "this Element's drift to fix"
+INHERITED_DIRS = {
+    ".claude/",  # installed via bin/init from a domain Element
+    "node_modules/", "vendor/",  # standard
+}
+
+
+def find_workspace_root(start: Path) -> Path:
+    cur = start.resolve()
+    for _ in range(20):
+        rasa = cur / "rasa.json"
+        if rasa.is_file():
+            try:
+                if json.loads(rasa.read_text()).get("kind") == "tenant":
+                    return cur
+            except (json.JSONDecodeError, OSError):
+                pass
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return start
+
+
+def is_inherited(rel_path: str) -> bool:
+    """True if file lives under an inherited-content directory."""
+    return any(rel_path.startswith(d) or f"/{d}" in rel_path for d in INHERITED_DIRS)
+
+
+def is_scannable(path: Path) -> bool:
+    """True if extension is in SCAN_EXTENSIONS."""
+    if path.suffix in SCAN_EXTENSIONS:
+        return True
+    if path.suffix == "" and path.name.upper() in ("LICENSE", "VERSION", "README"):
+        return True
+    return False
+
+
+def scan_dir(root: Path, label: str) -> list[tuple[str, str, str, int, str]]:
+    """
+    Walk root recursively. Return [(label, file_rel, category, line_no, snippet), ...].
+    Uses git ls-files when available (skips gitignored files); falls back to walk.
+    """
+    findings = []
+    try:
+        rel_files = subprocess.check_output(
+            ["git", "-C", str(root), "ls-files"],
+            stderr=subprocess.DEVNULL, text=True).splitlines()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # Not a git repo or no git — walk
+        rel_files = []
+        for p in root.rglob("*"):
+            if p.is_file():
+                rel_files.append(str(p.relative_to(root)))
+
+    for rel in rel_files:
+        path = root / rel
+        if not path.is_file():
+            continue
+        if not is_scannable(path):
+            continue
+        is_inh = is_inherited(rel)
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            for vocab_label, regex in LEGACY_VOCAB.items():
+                if regex.search(line):
+                    cat = f"legacy-vocab/{vocab_label}" + (" [INHERITED]" if is_inh else "")
+                    findings.append((label, rel, cat, lineno, line.strip()[:120]))
+            for path_label, regex in STALE_PATHS.items():
+                if regex.search(line):
+                    cat = f"stale-path/{path_label}" + (" [INHERITED]" if is_inh else "")
+                    findings.append((label, rel, cat, lineno, line.strip()[:120]))
+    return findings
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[1].strip())
+    parser.add_argument("--workspace", type=Path, default=Path.cwd())
+    parser.add_argument("--elements", action="store_true", help="Scan elements/<*>/ folders")
+    parser.add_argument("--canon", action="store_true", help="Scan canon/ folder")
+    parser.add_argument("--workspace-root", action="store_true", help="Scan workspace root .md/.sh/.json files")
+    parser.add_argument("--all", action="store_true", help="Scan everything (default if no flag set)")
+    parser.add_argument("--include-inherited", action="store_true",
+        help="Don't suppress matches in .claude/-installed content")
+    parser.add_argument("--quiet", action="store_true", help="Only print files with drift, not per-line")
+    args = parser.parse_args()
+
+    if not any([args.elements, args.canon, args.workspace_root]):
+        args.all = True
+
+    ws = find_workspace_root(args.workspace)
+    all_findings = []
+
+    if args.all or args.elements:
+        elements_dir = ws / "elements"
+        if elements_dir.is_dir():
+            for elem in sorted(elements_dir.iterdir()):
+                if elem.is_dir():
+                    all_findings += scan_dir(elem, f"elements/{elem.name}")
+
+    if args.all or args.canon:
+        canon_dir = ws / "canon"
+        if canon_dir.is_dir():
+            all_findings += scan_dir(canon_dir, "canon")
+
+    if args.all or args.workspace_root:
+        for p in ws.iterdir():
+            if p.is_file() and is_scannable(p):
+                rel = str(p.relative_to(ws))
+                try:
+                    text = p.read_text(errors="replace")
+                except OSError:
+                    continue
+                for lineno, line in enumerate(text.splitlines(), start=1):
+                    for vocab_label, regex in LEGACY_VOCAB.items():
+                        if regex.search(line):
+                            all_findings.append(("workspace-root", rel, f"legacy-vocab/{vocab_label}", lineno, line.strip()[:120]))
+                    for path_label, regex in STALE_PATHS.items():
+                        if regex.search(line):
+                            all_findings.append(("workspace-root", rel, f"stale-path/{path_label}", lineno, line.strip()[:120]))
+
+    if not args.include_inherited:
+        all_findings = [f for f in all_findings if "[INHERITED]" not in f[2]]
+
+    # Group by (label, file)
+    print(f"bin/scan-drift — {len(all_findings)} match(es)")
+    if not all_findings:
+        print("OK   No drift detected.")
+        return 0
+
+    grouped: dict[tuple[str, str], list[tuple[str, int, str]]] = {}
+    for label, file, cat, lineno, snippet in all_findings:
+        grouped.setdefault((label, file), []).append((cat, lineno, snippet))
+
+    for (label, file), items in sorted(grouped.items()):
+        print(f"\n  {label}/{file} ({len(items)} match(es))")
+        if not args.quiet:
+            for cat, lineno, snippet in items:
+                print(f"    L{lineno}  {cat}")
+                print(f"          {snippet}")
+
+    print()
+    print(f"FAIL {len(all_findings)} drift match(es) across {len(grouped)} file(s).")
+    print(f"     (Use --include-inherited to also see matches in installed .claude/ content.)")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

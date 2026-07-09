@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""
+bin/audit-substrate — sweep all Elements under elements/ and check
+each for canon ELEMENT_CONTRACT.md §4 conformance + rasa.json validity
++ workspace conventions.
+
+Catches every drift class found by hand during the canon-author
+sessions: missing CLAUDE.md (canon §4), missing LICENSE (workspace
+convention), missing VERSION, contract_version stale, rasa.json
+parse failures (catches the trailing-tool-call-markup bug class),
+VERSION/rasa.json#version mismatches.
+
+Run from any directory; resolves the workspace root by walking up
+to find the rasa-tenant rasa.json (kind=tenant).
+
+Exit: 0 if all Elements pass; 1 if any FAIL or ERROR.
+
+Cross-platform: pure Python standard library — runs on macOS, Linux,
+Windows. Requires python3.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+# Canon-known kinds (Spec §6; v1.4 SA-023 folded `orchestrator` into `tenant`)
+CANON_KINDS = {"domain", "module", "core", "kernel", "frontend", "recipe", "tenant"}
+
+# Current contract version (the one we'd flag stale-vs)
+CURRENT_CONTRACT = "1.3.0"
+
+# Canon §4 required files per workspace convention (LICENSE added per
+# domain-core/orchestrator-core v1.0+ decision; treat as workspace-required).
+REQUIRED_FILES = ["rasa.json", "VERSION", "README.md", "CLAUDE.md", "CHANGELOG.md", "LICENSE", ".gitignore"]
+
+# rasa.json#name regex (Spec §6 v1.4+; orchestrator folded into tenant per SA-023)
+NAME_REGEX = re.compile(r"^rasa\.(domain|module|core|kernel|frontend|recipe|tenant)\..+$")
+# Customer-tenant alternate form (per ELEMENT_CONTRACT v1.3 §3)
+TENANT_PUBLISHER_REGEX = re.compile(r"^[a-z][a-z0-9-]*\.tenant\..+$")
+
+
+def find_workspace_root(start: Path) -> Path | None:
+    """Walk up from start, return the dir whose rasa.json declares kind=tenant."""
+    cur = start.resolve()
+    for _ in range(20):
+        rasa = cur / "rasa.json"
+        if rasa.is_file():
+            try:
+                d = json.loads(rasa.read_text())
+                if d.get("kind") == "tenant":
+                    return cur
+            except (json.JSONDecodeError, OSError):
+                pass
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return None
+
+
+def check_element(element_dir: Path) -> tuple[str, list[tuple[str, str, str]]]:
+    """
+    Check one Element folder. Returns (status, [(level, code, message), ...]).
+    status: "OK" | "WARN" | "FAIL" | "ERROR"
+    level: "OK" | "WARN" | "FAIL"
+    """
+    findings: list[tuple[str, str, str]] = []
+    rasa_path = element_dir / "rasa.json"
+
+    if not rasa_path.is_file():
+        return ("ERROR", [("FAIL", "no-rasa-json", "rasa.json missing — not a canon-shaped Element")])
+
+    # Parse rasa.json (catches trailing-tool-call-markup-style bugs)
+    try:
+        rasa = json.loads(rasa_path.read_text())
+    except json.JSONDecodeError as exc:
+        findings.append(("FAIL", "rasa-json-parse", f"rasa.json parse failed: {exc}"))
+        return ("FAIL", findings)
+    except OSError as exc:
+        findings.append(("FAIL", "rasa-json-read", f"rasa.json read failed: {exc}"))
+        return ("FAIL", findings)
+
+    # §5 required fields
+    for field in ("name", "version", "kind"):
+        if field not in rasa:
+            findings.append(("FAIL", f"missing-{field}", f"rasa.json missing required §5 field: {field}"))
+
+    # kind must be in canon enum
+    kind = rasa.get("kind")
+    if kind and kind not in CANON_KINDS:
+        findings.append(("FAIL", "unknown-kind", f"rasa.json#kind={kind!r} is not in canon enum {sorted(CANON_KINDS)}"))
+
+    # name regex
+    name = rasa.get("name")
+    if name:
+        if not (NAME_REGEX.match(name) or TENANT_PUBLISHER_REGEX.match(name) or name in ("rasa.core", "rasa.kernel")):
+            findings.append(("FAIL", "name-regex", f"rasa.json#name={name!r} doesn't match canon regex"))
+
+    # contract_version present + current
+    cv = rasa.get("contract_version")
+    if not cv:
+        findings.append(("WARN", "no-contract-version", "rasa.json missing contract_version (canon §5a)"))
+    elif cv != CURRENT_CONTRACT:
+        findings.append(("WARN", "stale-contract-version", f"rasa.json#contract_version={cv!r}, current is {CURRENT_CONTRACT!r}"))
+
+    # Required files at root
+    for fname in REQUIRED_FILES:
+        if not (element_dir / fname).exists():
+            level = "FAIL" if fname in ("rasa.json",) else "WARN" if fname == "LICENSE" else "FAIL"
+            findings.append((level, f"missing-{fname.replace('.', '-')}", f"required file missing: {fname}"))
+
+    # VERSION file matches rasa.json#version
+    version_path = element_dir / "VERSION"
+    if version_path.is_file():
+        vfile = version_path.read_text().strip()
+        if vfile != rasa.get("version"):
+            findings.append(("FAIL", "version-mismatch",
+                f"VERSION={vfile!r} vs rasa.json#version={rasa.get('version')!r}"))
+
+    # content/ required for kinds that need it (canon §4)
+    if kind in ("domain", "module", "core"):
+        if not (element_dir / "content").is_dir():
+            findings.append(("FAIL", "no-content-dir", f"kind={kind} requires content/ directory"))
+
+    # bin/check-manifest exists? Run it.
+    cm = element_dir / "bin" / "check-manifest"
+    if cm.is_file() and os.access(cm, os.X_OK):
+        try:
+            result = subprocess.run([str(cm)], cwd=element_dir, capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                findings.append(("WARN", "check-manifest-fail",
+                    f"bin/check-manifest exited {result.returncode}: {result.stdout.strip().splitlines()[-1] if result.stdout else 'no output'}"))
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            findings.append(("WARN", "check-manifest-error", f"bin/check-manifest failed to run: {exc}"))
+
+    # Aggregate status
+    if any(level == "FAIL" for level, _, _ in findings):
+        return ("FAIL", findings)
+    if any(level == "WARN" for level, _, _ in findings):
+        return ("WARN", findings)
+    return ("OK", findings)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[1].strip())
+    parser.add_argument("--workspace", type=Path, default=Path.cwd(),
+        help="Workspace tenant root (default: walks up from CWD looking for kind=tenant rasa.json)")
+    parser.add_argument("--quiet", action="store_true", help="Only print failures + summary")
+    args = parser.parse_args()
+
+    ws = find_workspace_root(args.workspace) or args.workspace
+    elements_dir = ws / "elements"
+    if not elements_dir.is_dir():
+        print(f"ERROR: {elements_dir} not a directory", file=sys.stderr)
+        return 1
+
+    # Find all subdirs of elements/ (skip non-element files like REGISTRY.md, CHANGELOG.md)
+    element_folders = sorted(d for d in elements_dir.iterdir() if d.is_dir())
+
+    print(f"bin/audit-substrate — sweeping {len(element_folders)} Element folder(s) under {elements_dir}")
+    print()
+
+    counts = {"OK": 0, "WARN": 0, "FAIL": 0, "ERROR": 0}
+    for elem_dir in element_folders:
+        status, findings = check_element(elem_dir)
+        counts[status] += 1
+        glyph = {"OK": "✓ OK  ", "WARN": "⚠ WARN", "FAIL": "✗ FAIL", "ERROR": "✗ ERR "}[status]
+        if args.quiet and status == "OK":
+            continue
+        print(f"{glyph}  {elem_dir.name}")
+        for level, code, msg in findings:
+            level_glyph = {"OK": "    ✓ ", "WARN": "    ⚠ ", "FAIL": "    ✗ "}[level]
+            print(f"{level_glyph}{code}: {msg}")
+        if findings:
+            print()
+
+    print(f"Summary: {counts['OK']} OK · {counts['WARN']} WARN · {counts['FAIL']} FAIL · {counts['ERROR']} ERROR")
+    return 0 if (counts["FAIL"] == 0 and counts["ERROR"] == 0) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

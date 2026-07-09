@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""
+bin/audit-canon-tasks — sweep canon/tasks/ and check for stranded
+or inconsistent entries.
+
+The canon-tasks lifecycle (per canon/tasks/README.md): files start
+in triage/, graduate to backlog/, then active/, then done/ on
+absorption. Each move is intentional; stranded entries are drift.
+
+Checks per task file:
+  - frontmatter parses (lightweight YAML)
+  - frontmatter has `id` + `status` fields
+  - status string matches the directory the file lives in
+  - status: done files have an `absorbed_at` or `superseded_at` field
+  - status: active files don't sit indefinitely (warn if not modified
+    in ACTIVE_STALE_DAYS days)
+
+Catches the SA-015-edit class — a triage file authored by a parallel
+session that the master orchestrator wasn't tracking. Surfaces
+stranded triage entries that should be tracked or resolved.
+
+Exit: 0 if all OK; 1 if any FAIL.
+
+Cross-platform: pure Python standard library.
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+from datetime import date, datetime
+
+# Per-folder status expectations (prefix match)
+EXPECTED_STATUS = {
+    "triage":  ["triage"],
+    "backlog": ["backlog"],
+    "active":  ["active"],
+    "done":    ["done", "superseded-by-", "absorbed"],
+}
+
+ACTIVE_STALE_DAYS = 14
+
+
+def find_workspace_root(start: Path) -> Path:
+    cur = start.resolve()
+    for _ in range(20):
+        rasa = cur / "rasa.json"
+        if rasa.is_file():
+            try:
+                if json.loads(rasa.read_text()).get("kind") == "tenant":
+                    return cur
+            except (json.JSONDecodeError, OSError):
+                pass
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return start
+
+
+def parse_frontmatter(text: str) -> dict | None:
+    """Lightweight YAML frontmatter parser. Top-level key: value pairs only."""
+    if not text.startswith("---\n"):
+        return None
+    end_idx = text.find("\n---\n", 4)
+    if end_idx < 0:
+        return None
+    fm = text[4:end_idx]
+    out = {}
+    for line in fm.split("\n"):
+        line = line.rstrip()
+        if not line or line.startswith("#"):
+            continue
+        if line.lstrip().startswith("-"):
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if value.startswith('"') and value.endswith('"'):
+            value = value[1:-1]
+        elif value.startswith("'") and value.endswith("'"):
+            value = value[1:-1]
+        if value.startswith("|") or value.startswith(">"):
+            continue
+        out[key] = value
+    return out
+
+
+def check_task_file(path: Path, folder_name: str) -> list[tuple[str, str]]:
+    """Return [(level, message), ...] for a single task file."""
+    findings = []
+    try:
+        text = path.read_text()
+    except OSError as e:
+        return [("FAIL", f"read failed: {e}")]
+
+    fm = parse_frontmatter(text)
+    if fm is None:
+        return [("FAIL", "no parseable frontmatter (expected ---\\n...\\n---\\n at top)")]
+
+    if "id" not in fm:
+        findings.append(("FAIL", "frontmatter missing required `id` field"))
+    if "status" not in fm:
+        findings.append(("FAIL", "frontmatter missing required `status` field"))
+        return findings
+
+    status = fm["status"]
+    expected = EXPECTED_STATUS.get(folder_name, [])
+    matched = any(status == e or status.startswith(e) for e in expected)
+    if not matched:
+        findings.append(("FAIL",
+            f"status={status!r} but file lives in tasks/{folder_name}/ (expected: {expected})"))
+
+    if folder_name == "done":
+        if "absorbed_at" not in fm and "superseded_at" not in fm:
+            findings.append(("WARN", "done/ file missing `absorbed_at` or `superseded_at` field"))
+
+    if folder_name == "active":
+        mtime = datetime.fromtimestamp(path.stat().st_mtime).date()
+        age = (date.today() - mtime).days
+        if age > ACTIVE_STALE_DAYS:
+            findings.append(("WARN",
+                f"active/ file not modified in {age} days (>{ACTIVE_STALE_DAYS}). Stalled? Move to done/ on absorb, or back to backlog/."))
+
+    return findings if findings else [("OK", "ok")]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[1].strip())
+    parser.add_argument("--workspace", type=Path, default=Path.cwd())
+    parser.add_argument("--quiet", action="store_true", help="Only print failures + warnings + summary")
+    args = parser.parse_args()
+
+    ws = find_workspace_root(args.workspace)
+    tasks_root = ws / "canon" / "tasks"
+
+    if not tasks_root.is_dir():
+        print(f"ERROR: {tasks_root} not a directory", file=sys.stderr)
+        return 1
+
+    print(f"bin/audit-canon-tasks — sweeping {tasks_root}")
+    print()
+
+    counts = {"OK": 0, "WARN": 0, "FAIL": 0}
+    folder_counts = {}
+
+    for folder in ("triage", "backlog", "active", "done"):
+        folder_dir = tasks_root / folder
+        if not folder_dir.is_dir():
+            continue
+        task_files = sorted(p for p in folder_dir.iterdir()
+                           if p.is_file() and p.suffix == ".md" and p.name != ".gitkeep")
+        folder_counts[folder] = len(task_files)
+        for tf in task_files:
+            findings = check_task_file(tf, folder)
+            worst = max(("OK", "WARN", "FAIL").index(lvl) for lvl, _ in findings)
+            worst_label = ("OK", "WARN", "FAIL")[worst]
+            counts[worst_label] += 1
+            if args.quiet and worst_label == "OK":
+                continue
+            glyph = {"OK": "✓ OK  ", "WARN": "⚠ WARN", "FAIL": "✗ FAIL"}[worst_label]
+            print(f"{glyph}  tasks/{folder}/{tf.name}")
+            for level, msg in findings:
+                if level == "OK":
+                    continue
+                lglyph = {"WARN": "    ⚠ ", "FAIL": "    ✗ "}[level]
+                print(f"{lglyph}{msg}")
+            if any(lvl != "OK" for lvl, _ in findings):
+                print()
+
+    print()
+    print(f"Per folder: " + " · ".join(f"{f}/={n}" for f, n in folder_counts.items()))
+    print(f"Summary: {counts['OK']} OK · {counts['WARN']} WARN · {counts['FAIL']} FAIL")
+    return 0 if counts["FAIL"] == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

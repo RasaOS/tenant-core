@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""
+bin/ship-element — automate the per-Element ship flow.
+
+Steps:
+  1. Pre-flight: working tree clean, on main, bin/check-manifest passes (if present).
+  2. Read current rasa.json + VERSION; compute next version per --bump flag.
+  3. Update rasa.json#version + VERSION file.
+  4. Open CHANGELOG.md and insert a skeleton entry under the version
+     header; user fills in the narrative.
+  5. Pause for user to edit CHANGELOG (prompts to continue).
+  6. git add, git commit ("vX.Y.Z: <message>"), git tag vX.Y.Z.
+  7. git push origin main + git push --tags origin.
+  8. Print snippets for: elements/REGISTRY.md row update,
+     elements/CHANGELOG.md aggregated entry, canon/AUDIT.md entry.
+     Human still pastes these in — narrative work stays manual.
+
+Cross-platform: pure Python standard library + git on PATH.
+
+Usage:
+  bin/ship-element <element-name> --bump <patch|minor|major> [--message "<short summary>"] [--dry-run]
+
+Example:
+  bin/ship-element domain-code --bump patch --message "lint fix"
+
+Run from any directory; resolves the workspace root via the tenant
+rasa.json walk-up.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from datetime import date
+
+
+def find_workspace_root(start: Path) -> Path:
+    cur = start.resolve()
+    for _ in range(20):
+        rasa = cur / "rasa.json"
+        if rasa.is_file():
+            try:
+                if json.loads(rasa.read_text()).get("kind") == "tenant":
+                    return cur
+            except (json.JSONDecodeError, OSError):
+                pass
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return start
+
+
+def bump_version(current: str, bump: str) -> str:
+    parts = current.lstrip("v").split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        sys.exit(f"ERROR: can't parse semver from current version: {current!r}")
+    major, minor, patch = (int(p) for p in parts)
+    if bump == "patch":
+        patch += 1
+    elif bump == "minor":
+        minor += 1
+        patch = 0
+    elif bump == "major":
+        major += 1
+        minor = 0
+        patch = 0
+    else:
+        sys.exit(f"ERROR: --bump must be patch|minor|major (got {bump!r})")
+    return f"{major}.{minor}.{patch}"
+
+
+def git_in(repo: Path, *args: str, check: bool = True) -> str:
+    try:
+        result = subprocess.run(["git", "-C", str(repo), *args],
+            capture_output=True, text=True, check=check)
+        return result.stdout
+    except subprocess.CalledProcessError as exc:
+        sys.exit(f"ERROR: git {' '.join(args)} failed: {exc.stderr.strip()}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[1].strip())
+    parser.add_argument("element", help="Element folder name (e.g., 'domain-code')")
+    parser.add_argument("--bump", choices=["patch", "minor", "major"], required=True)
+    parser.add_argument("--message", "-m", help="Short summary for the commit + CHANGELOG header")
+    parser.add_argument("--dry-run", action="store_true", help="Print planned actions; make no changes")
+    parser.add_argument("--workspace", type=Path, default=Path.cwd())
+    args = parser.parse_args()
+
+    ws = find_workspace_root(args.workspace)
+    elem_dir = ws / "elements" / args.element
+
+    if not elem_dir.is_dir():
+        sys.exit(f"ERROR: {elem_dir} not a directory")
+    if not (elem_dir / ".git").is_dir():
+        sys.exit(f"ERROR: {elem_dir} is not its own git repo")
+
+    rasa_path = elem_dir / "rasa.json"
+    version_path = elem_dir / "VERSION"
+    changelog_path = elem_dir / "CHANGELOG.md"
+
+    rasa = json.loads(rasa_path.read_text())
+    current_version = rasa.get("version", "0.0.0")
+    next_version = bump_version(current_version, args.bump)
+    element_name = rasa.get("name", args.element)
+    summary = args.message or f"v{next_version} release"
+
+    print(f"ship-element: {element_name}")
+    print(f"  Element folder: {elem_dir.relative_to(ws)}")
+    print(f"  Version:        {current_version} → {next_version} ({args.bump})")
+    print(f"  Summary:        {summary}")
+    print()
+
+    # Pre-flight
+    status = git_in(elem_dir, "status", "--porcelain").strip()
+    if status:
+        sys.exit(f"ERROR: {elem_dir} working tree not clean:\n{status}")
+
+    branch = git_in(elem_dir, "branch", "--show-current").strip()
+    if branch != "main":
+        sys.exit(f"ERROR: {elem_dir} not on main (currently on {branch})")
+
+    cm = elem_dir / "bin" / "check-manifest"
+    if cm.is_file() and os.access(cm, os.X_OK):
+        try:
+            subprocess.run([str(cm)], cwd=elem_dir, check=True, capture_output=True, timeout=30)
+        except subprocess.CalledProcessError as exc:
+            sys.exit(f"ERROR: bin/check-manifest failed:\n{exc.stdout.decode() if exc.stdout else ''}\n{exc.stderr.decode() if exc.stderr else ''}")
+
+    if args.dry_run:
+        print("--dry-run: would now update VERSION + rasa.json#version, prompt for CHANGELOG, commit + tag + push.")
+        return 0
+
+    # Update VERSION
+    version_path.write_text(f"{next_version}\n")
+    # Update rasa.json#version (preserve formatting via regex — avoid full re-serialize)
+    rasa_text = rasa_path.read_text()
+    new_rasa_text = re.sub(
+        r'("version"\s*:\s*)"[^"]+"',
+        rf'\g<1>"{next_version}"',
+        rasa_text, count=1)
+    rasa_path.write_text(new_rasa_text)
+
+    # Insert CHANGELOG skeleton
+    if changelog_path.is_file():
+        changelog_text = changelog_path.read_text()
+        today = date.today().isoformat()
+        skeleton = f"""## v{next_version} — {today}
+
+### {summary}
+
+<!-- Fill in the change details. Then save + close this file; ship-element will continue. -->
+
+---
+
+"""
+        # Insert after the first "---" separator (between header and first version)
+        if "---\n" in changelog_text:
+            head, _, tail = changelog_text.partition("---\n")
+            changelog_text = head + "---\n\n" + skeleton + tail.lstrip("\n")
+        else:
+            changelog_text = changelog_text + "\n\n" + skeleton
+        changelog_path.write_text(changelog_text)
+
+        print(f"  CHANGELOG.md updated with skeleton at v{next_version}.")
+        print(f"  Edit {changelog_path} to fill in the entry.")
+        print(f"  When done, press Enter to continue (or Ctrl-C to abort):")
+        try:
+            input("> ")
+        except KeyboardInterrupt:
+            print("\nAborted. Reverting...", file=sys.stderr)
+            git_in(elem_dir, "checkout", "--", "VERSION", "rasa.json", "CHANGELOG.md")
+            sys.exit(1)
+
+    # Commit, tag, push
+    git_in(elem_dir, "add", "VERSION", "rasa.json", "CHANGELOG.md")
+    commit_msg = f"v{next_version}: {summary}"
+    git_in(elem_dir, "commit", "-m", commit_msg)
+    git_in(elem_dir, "tag", "-a", f"v{next_version}", "-m", f"v{next_version} — {summary}")
+    print(f"  Committed + tagged v{next_version}.")
+
+    git_in(elem_dir, "push", "origin", "main")
+    git_in(elem_dir, "push", "--tags", "origin")
+    print(f"  Pushed main + tag v{next_version}.")
+
+    # Get the new commit SHA for snippet templates
+    sha = git_in(elem_dir, "rev-parse", "--short", "HEAD").strip()
+
+    print()
+    print("=" * 70)
+    print("MANUAL FOLLOW-UP — paste these into the corresponding files:")
+    print("=" * 70)
+    print()
+    print(f"### elements/REGISTRY.md row (update existing or add new)")
+    print(f"| `{element_name}` | <kind annotation> | `elements/{args.element}` | {next_version} | {rasa.get('contract_version','—')} | `v{next_version}` | `{sha}` | [RasaOS/{args.element}](https://github.com/RasaOS/{args.element}) |")
+    print()
+    print(f"### elements/CHANGELOG.md (aggregated track #2) — under today's date section")
+    print(f"### `{element_name}` v{current_version} → v{next_version} — {summary}")
+    print()
+    print(f"- `[commit]` `{sha}` \"{commit_msg}\"")
+    print(f"- `[push]` `RasaOS/{args.element}` main + tag `v{next_version}`")
+    print(f"- <one or two sentences about what shipped + why>")
+    print()
+    print(f"### canon/AUDIT.md (under today's date section)")
+    print(f"- `[commit]` {args.element} `{sha}` \"{commit_msg}\"")
+    print(f"- `[push]` {args.element} main + tag `v{next_version}` → `RasaOS/{args.element}`")
+    print()
+    print(f"Then run: bin/refresh-registry --check  (or --write)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

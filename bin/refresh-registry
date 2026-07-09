@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""
+bin/refresh-registry — regenerate the Live Elements rows in
+elements/REGISTRY.md from actual git state + each Element's
+rasa.json.
+
+REGISTRY.md uses marker comments to delimit the auto-generated
+region. Everything outside the markers is preserved verbatim
+(header text, "Pre-canon Element" + "Retired Element" + "Stub
+Elements" + "Contract baseline" + footer sections).
+
+Markers (case-sensitive, exact):
+  <!-- BEGIN AUTO: live-elements -->
+  <!-- END AUTO: live-elements -->
+
+If the markers don't exist in REGISTRY.md, the script reports + exits
+non-zero (won't blindly insert markers; first-time setup needs human
+review).
+
+Modes:
+  --check     Compare current REGISTRY.md region against generated; exit 1 if drift.
+  --write     Overwrite REGISTRY.md region with generated table.
+  (default)   Print generated table to stdout; don't touch REGISTRY.md.
+
+Cross-platform: pure Python standard library + git on PATH.
+"""
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+BEGIN_MARKER = "<!-- BEGIN AUTO: live-elements -->"
+END_MARKER = "<!-- END AUTO: live-elements -->"
+
+
+def find_workspace_root(start: Path) -> Path:
+    cur = start.resolve()
+    for _ in range(20):
+        rasa = cur / "rasa.json"
+        if rasa.is_file():
+            try:
+                if json.loads(rasa.read_text()).get("kind") == "tenant":
+                    return cur
+            except (json.JSONDecodeError, OSError):
+                pass
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return start
+
+
+def git_head(element_dir: Path) -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(element_dir), "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL, text=True).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "—"
+
+
+def git_latest_tag(element_dir: Path) -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(element_dir), "describe", "--tags", "--abbrev=0"],
+            stderr=subprocess.DEVNULL, text=True).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "—"
+
+
+def github_repo_link(rasa: dict, folder_name: str) -> str:
+    """Build the [RasaOS/<repo>](url) link from rasa.json#source.repo if present.
+    Normalizes lowercase rasa-os/ → canonical RasaOS/ for the link display."""
+    src = rasa.get("source", {}).get("repo", "")
+    m = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$", src)
+    if m:
+        org, repo = m.group(1), m.group(2)
+        # Normalize to canonical org name (RasaOS) for display + URL
+        if org.lower() == "rasa-os" or org == "RasaOS":
+            org = "RasaOS"
+        return f"[{org}/{repo}](https://github.com/{org}/{repo})"
+    # fallback to folder-name guess
+    return f"RasaOS/{folder_name}"
+
+
+def generate_table(elements_dir: Path, workspace_root: Path | None = None) -> str:
+    """Generate the Live Elements markdown table from actual disk state.
+
+    Includes the workspace-root tenant (rasa.json at workspace root with
+    kind=tenant) if workspace_root is provided.
+    """
+    # Build (folder_path, folder_label) list — workspace root tenant first if applicable.
+    targets = []
+    if workspace_root is not None and (workspace_root / "rasa.json").is_file():
+        try:
+            ws_rasa = json.loads((workspace_root / "rasa.json").read_text())
+            if ws_rasa.get("kind") == "tenant":
+                targets.append((workspace_root, "(workspace root — tenant)"))
+        except json.JSONDecodeError:
+            pass
+    for d in sorted(elements_dir.iterdir()):
+        if d.is_dir():
+            targets.append((d, d.name))
+
+    rows = []
+    for d, folder_label in targets:
+        rasa_path = d / "rasa.json"
+        if not rasa_path.is_file():
+            # Stub Element (no rasa.json) — skip (handled in different section)
+            continue
+        try:
+            rasa = json.loads(rasa_path.read_text())
+        except json.JSONDecodeError:
+            rows.append((folder_label, "**PARSE FAIL**", "—", "—", "—", "—", "—", "—"))
+            continue
+
+        name = rasa.get("name", folder_label)
+        kind = rasa.get("kind", "—")
+        # Shape pattern annotation
+        rasa_block = rasa.get("rasa", {})
+        pattern = rasa_block.get("shape_pattern")
+        role = rasa_block.get("role")
+        kind_str = kind
+        if role and "template" in role:
+            kind_str = f"{kind} (**template, LOCKED**)"
+        elif pattern and pattern != "agnostic":
+            kind_str = f"{kind} ({pattern})"
+        if kind == "tenant":
+            kind_str = f"**{kind} (v1.3 SA-018)**"
+
+        version = rasa.get("version", "—")
+        contract = rasa.get("contract_version", "—")
+        tag = git_latest_tag(d)
+        head = git_head(d)
+        folder = f"`elements/{d.name}`" if d != workspace_root else "`~/rAI/rasa-os/` (the workspace IS the tenant)"
+        repo = github_repo_link(rasa, d.name)
+
+        rows.append((f"`{name}`", kind_str, folder, version, contract, f"`{tag}`", f"`{head}`", repo))
+
+    # Order: tenant first, templates next, then by name
+    def sort_key(row):
+        name = row[0]
+        if "tenant" in name:
+            return (0, name)
+        kind = row[1]
+        if "template" in kind:
+            return (1, name)
+        return (2, name)
+
+    rows.sort(key=sort_key)
+
+    out = ["| Element | Kind | Folder | Version | Contract | Last tag | HEAD | Repo |",
+           "|---------|------|--------|---------|----------|----------|------|------|"]
+    for row in rows:
+        out.append("| " + " | ".join(row) + " |")
+    return "\n".join(out)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[1].strip())
+    parser.add_argument("--workspace", type=Path, default=Path.cwd())
+    parser.add_argument("--check", action="store_true", help="Compare current REGISTRY region vs generated; exit 1 if drift")
+    parser.add_argument("--write", action="store_true", help="Overwrite REGISTRY.md region with generated table")
+    args = parser.parse_args()
+
+    ws = find_workspace_root(args.workspace)
+    elements_dir = ws / "elements"
+    registry = ws / "elements" / "REGISTRY.md"
+
+    if not elements_dir.is_dir():
+        print(f"ERROR: {elements_dir} not a directory", file=sys.stderr)
+        return 1
+
+    table = generate_table(elements_dir, workspace_root=ws)
+
+    if not args.check and not args.write:
+        print(table)
+        return 0
+
+    if not registry.is_file():
+        print(f"ERROR: {registry} not found", file=sys.stderr)
+        return 1
+
+    content = registry.read_text()
+    if BEGIN_MARKER not in content or END_MARKER not in content:
+        print(f"ERROR: REGISTRY.md missing markers:", file=sys.stderr)
+        print(f"  {BEGIN_MARKER}", file=sys.stderr)
+        print(f"  {END_MARKER}", file=sys.stderr)
+        print(f"Add them around the Live Elements table once, then this script can manage updates.", file=sys.stderr)
+        return 1
+
+    before, rest = content.split(BEGIN_MARKER, 1)
+    _, after = rest.split(END_MARKER, 1)
+    new_region = BEGIN_MARKER + "\n\n" + table + "\n\n" + END_MARKER
+    new_content = before + new_region + after
+
+    if args.check:
+        if content == new_content:
+            print("OK   REGISTRY.md Live Elements region matches actual substrate state.")
+            return 0
+        print("FAIL REGISTRY.md Live Elements region drifted from actual substrate state.", file=sys.stderr)
+        print("     Re-run with --write to update, or hand-edit between the markers.", file=sys.stderr)
+        return 1
+
+    if args.write:
+        registry.write_text(new_content)
+        print(f"OK   {registry} Live Elements region updated.")
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

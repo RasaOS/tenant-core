@@ -4,6 +4,14 @@ Reverse-chronological. Each entry is a version bump.
 
 ---
 
+## 1.2.0 — 2026-07-09
+
+### Folded to `rasa.tenant.core` + absorbed the substrate tooling (canon SA-023)
+
+- The `orchestrator` kind was folded into `tenant`. This Element (formerly the orchestrator template) becomes rasa.tenant.core — the foundational tenant brain installed into every tenant by default. Absorbed all bin/ tooling from the now-retired rasa.orchestrator.workspace. Renamed rasa.orchestrator.core → rasa.tenant.core; folder orchestrator-core → tenant-core.
+
+---
+
 ## 1.1.0 — 2026-05-24 — Pattern 3 (Hybrid) gets a concrete CTO-style example
 
 Minor bump per the post-v1.0 versioning intent ("Minor (1.0.x → 1.1.0)

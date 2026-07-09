@@ -1,17 +1,15 @@
 {
   "$schema": "https://rasa-os.github.io/schema/rasa.schema.v1.json",
   "contract_version": "1.3.0",
-  "name": "rasa.orchestrator.core",
-  "version": "1.1.0",
-  "kind": "orchestrator",
+  "name": "rasa.tenant.core",
+  "version": "1.2.0",
+  "kind": "tenant",
   "aliases": [
-    "orchestrator-core",
-    "rasa-orchestrator-template",
-    "orchestrator-template"
+    "tenant-core"
   ],
-  "description": "RasaOS Orchestrator · Core. The unified canonical template every orchestrator Element follows. v1.0.0 ships the SHAPE every orchestrator shares — canon-required files (§4) + Apache-2.0 LICENSE + content/SHAPE.md documenting the two orchestrator shape patterns (domain-shaped + structure-shaped) + opt-in scaffold subdirs.\n\nFork this to author a new orchestrator. Decide upfront which shape fits: **domain-shaped** orchestrators (rasa.orchestrator.firm, .clinic, .company) coordinate across instances WITHIN one vertical; **structure-shaped** orchestrators (rasa.orchestrator.workspace) coordinate across siblings ACROSS a substrate, orthogonal to domain. Delete SHAPE.md from your fork; replace with content/README.md.\n\nNotable shape note: bin/init AND seed/ are OPTIONAL for orchestrators. Structure-shaped orchestrators often don't install — they operate as a session contract. The template ships both bin/ + seed/ as starter scaffold; forks delete what they don't need (vs domains where bin/init is typically required).\n\nDistinct from rasa.core (kind: core, the L1 shared bones every Element depends on). orchestrator-core is the template for the orchestrator KIND; rasa.core is the L1 dependency. Different concerns; both named 'core' for canonical positioning.",
+  "description": "The foundational tenant brain/template installed into every tenant by default (the renamed rasa.orchestrator.core). Also carries the substrate-authoring tooling absorbed from the retired rasa.orchestrator.workspace: new-element, ship-element, refresh-registry, scan-drift, audit-substrate, lock-sequence, audit-canon-tasks.",
   "source": {
-    "repo": "https://github.com/RasaOS/orchestrator-core",
+    "repo": "https://github.com/RasaOS/tenant-core",
     "branch": "main"
   },
   "tier": "Pro",
@@ -22,9 +20,9 @@
   ],
   "requires": {},
   "rasa": {
-    "role": "orchestrator-template",
+    "role": "tenant-foundational-brain",
     "shape_pattern": "agnostic",
-    "note": "Canonical orchestrator template per canon ELEMENT_CONTRACT.md v1.3+ §4 (required files) + §7 (install policies). v1.0.0 is the locked-down shape: forks may pin to this version and absorb later minor bumps as additive. shape_pattern='agnostic' here flags that this template does not commit to domain-shaped or structure-shaped; forks set their own. See content/SHAPE.md for the choice. Paired with rasa.domain.core v1.0.0 which serves the same role for the domain kind."
+    "note": "Canonical tenant template (folded from rasa.orchestrator.core per canon SA-023 — orchestrator kind removed; the tenant IS the orchestrator) per canon ELEMENT_CONTRACT.md v1.3+ §4 (required files) + §7 (install policies). v1.0.0 is the locked-down shape: forks may pin to this version and absorb later minor bumps as additive. shape_pattern='agnostic' here flags that this template does not commit to domain-shaped or structure-shaped; forks set their own. See content/SHAPE.md for the choice. Paired with rasa.domain.core v1.0.0 which serves the same role for the domain kind."
   },
   "element": {
     "description": "Files mirrored into the install target per canon ELEMENT_CONTRACT.md §7. v1.0.0 ships all of these as opt-in scaffold — registered for check-manifest coverage but not installed automatically. Forks change policies as they populate content/, OR delete entries entirely for structure-shaped orchestrators that don't install at all.",
@@ -52,6 +50,12 @@
         "to": ".claude/agents/",
         "policy": "opt-in",
         "note": "Claude subagent definitions scaffold. Forks adopting populate + change policy to directory-mirror."
+      },
+      {
+        "from": "content/NOTES.md",
+        "to": "content/NOTES.md",
+        "policy": "opt-in",
+        "note": "Authoring roadmap (candidate skills/rules/agents for the substrate-authoring tooling) absorbed from the retired rasa.orchestrator.workspace per canon SA-023. Not installed into consumer projects."
       }
     ]
   },

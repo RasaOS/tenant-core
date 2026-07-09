@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""
+bin/new-element — scaffold a new Element by forking from the
+appropriate canonical template (domain-core for kind=domain;
+orchestrator-core for kind=orchestrator). Updates rasa.json,
+README.md, CLAUDE.md placeholders for the new Element's identity.
+
+Usage:
+  bin/new-element <kind> <name> [--description "..."] [--dry-run]
+
+Example:
+  bin/new-element domain health
+  bin/new-element orchestrator clinic --description "Multi-patient coordination for clinics"
+  bin/new-element module tasks --description "Portable task-management lifecycle, mountable into any domain/orchestrator"
+
+Produces:
+  elements/<kind>-<name>/   (fresh fork of template, .git initialized,
+                             ready for first commit)
+
+Then user:
+  1. Edits rasa.json to fill in capabilities[]
+  2. Populates content/
+  3. Bumps + commits + tags + pushes (see bin/ship-element)
+  4. Creates RasaOS/<kind>-<name> on GitHub
+  5. Registers in elements/REGISTRY.md
+
+Cross-platform: pure Python standard library + git.
+"""
+
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+# Map kind → template Element folder name in elements/
+# core, frontend, recipe all fork from domain-core's structural shape
+# (canon Spec §6 kind-specific shape variation: core uses same shape
+# as domain; frontend/recipe diverge in content/ but the §4 required
+# files + bin/init + check-manifest + seed templates are identical).
+# kernel + tenant are special: tenant has its own scaffold pattern;
+# kernel is L2 image-distributed (own scaffold). Both skipped here.
+TEMPLATES = {
+    "domain":       "domain-core",
+    "core":         "domain-core",      # singleton; uses domain-core shape
+    "frontend":     "domain-core",      # L4 image; uses domain-core shape for v0.1
+    "recipe":       "domain-core",      # composition declaration; uses domain-core shape for v0.1
+    "module":       "domain-core",      # L1 mountable capability; uses domain-core shape for v0.1
+}
+
+# Per-kind defaults applied to the forked rasa.json after the basic
+# customization (name/version/description). Kind-specific tweaks.
+KIND_DEFAULTS = {
+    "domain":       {"tier": "Pro"},
+    "core":         {"tier": "Pro", "rasa_extras": {"singleton": True, "role": "L1-shared-foundation-singleton"}},
+    "frontend":     {"tier": "Pro", "rasa_extras": {"role": "L4-vertical-frontend"}},
+    "recipe":       {"tier": "Pro", "rasa_extras": {"role": "L4-composition-declaration"}},
+    "module":       {"tier": "Pro", "rasa_extras": {"role": "L1-mountable-capability"}},
+}
+
+# Kinds permitted to declare requires.parent_kind (schema: module-kind only).
+# A module mounts into one or more parents; default = both domain + tenant
+# (canon v1.4 SA-023: the `orchestrator` kind was folded into `tenant`).
+PARENT_KIND_KINDS = {"module"}
+DEFAULT_PARENT_KIND = ["domain", "tenant"]
+
+# Singletons (canon Spec §3 regex exception). No <identifier> suffix.
+# For these kinds, the `name` argument is ignored — name is always `rasa.<kind>`.
+SINGLETON_KINDS = {"core", "kernel"}
+
+# Canon kinds; only these accept new Element creation via this script.
+SCAFFOLDABLE_KINDS = set(TEMPLATES.keys())
+
+
+def find_workspace_root(start: Path) -> Path:
+    cur = start.resolve()
+    for _ in range(20):
+        rasa = cur / "rasa.json"
+        if rasa.is_file():
+            try:
+                if json.loads(rasa.read_text()).get("kind") == "tenant":
+                    return cur
+            except (json.JSONDecodeError, OSError):
+                pass
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return start
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[1].strip())
+    parser.add_argument("kind", choices=sorted(SCAFFOLDABLE_KINDS),
+        help=f"Element kind. Templates exist for: {sorted(SCAFFOLDABLE_KINDS)}")
+    parser.add_argument("name", nargs="?", default=None,
+        help="Short name (e.g., 'health', 'clinic'). The full canonical name becomes 'rasa.<kind>.<name>'. "
+             "OMIT for singleton kinds (core, kernel) — name is always 'rasa.<kind>' for those.")
+    parser.add_argument("--description", default=None, help="One-line description for rasa.json#description")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--workspace", type=Path, default=Path.cwd())
+    args = parser.parse_args()
+
+    # Singleton kinds — name is forced to the kind itself; ignore user input
+    if args.kind in SINGLETON_KINDS:
+        if args.name and args.name != args.kind:
+            print(f"NOTE: {args.kind!r} is a singleton (canon Spec §3 regex exception); "
+                  f"name argument {args.name!r} ignored. Folder + name will both be {args.kind!r}.")
+        args.name = args.kind
+        new_folder = args.kind
+        full_name = f"rasa.{args.kind}"
+    else:
+        if not args.name:
+            sys.exit(f"ERROR: name required for kind={args.kind!r} (only singletons {sorted(SINGLETON_KINDS)} default to kind itself)")
+        # Validate name
+        if not re.match(r"^[a-z][a-z0-9-]*$", args.name):
+            sys.exit(f"ERROR: name must be lowercase, start with a letter, contain only [a-z0-9-] (got: {args.name!r})")
+        new_folder = f"{args.kind}-{args.name}"
+        full_name = f"rasa.{args.kind}.{args.name}"
+
+    ws = find_workspace_root(args.workspace)
+    template_folder = TEMPLATES[args.kind]
+    template_dir = ws / "elements" / template_folder
+    new_dir = ws / "elements" / new_folder
+
+    if not template_dir.is_dir():
+        sys.exit(f"ERROR: template folder {template_dir} not found")
+    if new_dir.exists():
+        sys.exit(f"ERROR: {new_dir} already exists; refuse to overwrite")
+
+    description = args.description or f"RasaOS {args.kind.capitalize()} · {args.name.capitalize()}. (TODO: fill in real description)"
+
+    print(f"new-element: {full_name}")
+    print(f"  Template:     elements/{template_folder} (v{json.loads((template_dir/'rasa.json').read_text()).get('version','?')})")
+    print(f"  New folder:   elements/{new_folder}")
+    print(f"  Canonical:    {full_name}")
+    print(f"  Description:  {description[:80]}{'...' if len(description) > 80 else ''}")
+    print()
+
+    if args.dry_run:
+        print("--dry-run: would now copy template, customize rasa.json, init git.")
+        return 0
+
+    # Copy template tree (skip .git)
+    def ignore_git(src, names):
+        return [n for n in names if n == ".git"]
+
+    shutil.copytree(template_dir, new_dir, ignore=ignore_git)
+    print(f"  Copied template → {new_dir.relative_to(ws)}")
+
+    # Customize rasa.json
+    rasa_path = new_dir / "rasa.json"
+    rasa = json.loads(rasa_path.read_text())
+    rasa["name"] = full_name
+    rasa["version"] = "0.1.0"
+    rasa["description"] = description
+    rasa["aliases"] = [new_folder]
+    rasa["kind"] = args.kind  # Override template's kind (template was domain/orchestrator)
+    # Apply per-kind defaults
+    kdefaults = KIND_DEFAULTS.get(args.kind, {})
+    if "tier" in kdefaults:
+        rasa["tier"] = kdefaults["tier"]
+    if "rasa" not in rasa or not isinstance(rasa["rasa"], dict):
+        rasa["rasa"] = {}
+    # Reset rasa.role + shape_pattern (forks pick their own)
+    rasa["rasa"]["role"] = f"{args.kind}-element"
+    # Apply kind-specific rasa extras (singleton flag, role overrides)
+    for k, v in kdefaults.get("rasa_extras", {}).items():
+        rasa["rasa"][k] = v
+    rasa["rasa"]["note"] = (
+        f"Forked from {TEMPLATES[args.kind]} (template baseline). "
+        f"Fill in shape_pattern + populate content/. "
+        f"For {args.kind} kind: review canon Spec §6 kind-specific shape variation for required structure."
+    )
+    # Reset source.repo (placeholder)
+    if "source" in rasa:
+        rasa["source"]["repo"] = f"https://github.com/RasaOS/{new_folder}"
+    # Module kind is the only kind permitted to declare requires.parent_kind
+    # (canon Spec §6 / schema). Seed the default (mountable into both
+    # domain + orchestrator parents) so the shell validates as a real module.
+    if args.kind in PARENT_KIND_KINDS:
+        req = rasa.get("requires")
+        if not isinstance(req, dict):
+            req = {}
+        req.setdefault("parent_kind", list(DEFAULT_PARENT_KIND))
+        rasa["requires"] = req
+    # Reset element.files + seed.files to the template's opt-in scaffolds (already correct from copy)
+    rasa_path.write_text(json.dumps(rasa, indent=2) + "\n")
+    print(f"  Customized rasa.json (name, version=0.1.0, description, aliases)")
+
+    # Reset VERSION
+    (new_dir / "VERSION").write_text("0.1.0\n")
+
+    # Reset CHANGELOG
+    (new_dir / "CHANGELOG.md").write_text(f"""# CHANGELOG — `{full_name}`
+
+Reverse-chronological. Each entry is a version bump.
+
+---
+
+## 0.1.0 — INITIAL (TODO: date)
+
+### Forked from rasa.{args.kind}.core
+
+Scaffolded via `bin/new-element {args.kind} {args.name}`. Inherits
+canon-required files (§4) + Apache-2.0 LICENSE + bin/init +
+bin/check-manifest + seed templates + content/SHAPE.md (which forks
+should delete after picking a shape pattern).
+
+### TODO before first ship
+
+- Fill in `rasa.json#description` (currently a placeholder)
+- Decide shape pattern: edit `rasa.json#rasa.shape_pattern`
+- Populate `content/` per chosen pattern (delete content/SHAPE.md
+  after; replace with content/README.md)
+- Fill in `rasa.json#capabilities[]`
+- Author README.md + CLAUDE.md for this Element specifically
+- Run `bin/check-manifest`
+- Create `RasaOS/{new_folder}` on GitHub
+- First commit + tag v0.1.0 + push
+- Register in `elements/REGISTRY.md` + `elements/CHANGELOG.md`
+""")
+    print(f"  Reset CHANGELOG.md to fresh v0.1.0 entry with TODO list")
+
+    # Update README.md (replace template-specific framing with new-Element framing)
+    readme_path = new_dir / "README.md"
+    if readme_path.is_file():
+        readme_text = f"""# {full_name.replace('.', ' · ').title()}
+
+**Canonical name:** `{full_name}`
+**Repo / folder:** `{new_folder}`
+**Kind:** `{args.kind}` (canon Spec §6)
+**Contract:** Element Contract v1.3.0
+**Version:** 0.1.0 (initial; scaffolded from `rasa.{args.kind}.core`)
+**Status:** TODO — describe what this Element does + how it fits.
+
+## What this is
+
+{description}
+
+## Forked from
+
+`rasa.{args.kind}.core` v{json.loads((template_dir/'rasa.json').read_text()).get('version','?')}. See the template's `content/SHAPE.md` for pattern choices. Delete that file once you pick a pattern and replace with `content/README.md`.
+
+## TODO
+
+- Fill in this README with the real description, shape choice, file layout, usage.
+- Author this Element's specific `CLAUDE.md` (the inherited one is the template's generic).
+- Populate `content/` per chosen shape pattern.
+- See CHANGELOG.md for the full first-ship TODO list.
+
+## See also
+
+- `~/rAI/rasa-os/elements/{template_folder}/` — the template this Element forked from
+- Canon Spec §6 — the `{args.kind}` kind definition
+- `~/rAI/rasa-os/elements/REGISTRY.md` — register this Element here on first ship
+"""
+        readme_path.write_text(readme_text)
+        print(f"  Reset README.md to fresh-fork framing")
+
+    # Init git
+    subprocess.run(["git", "init", "-b", "main"], cwd=new_dir, check=True, capture_output=True)
+    print(f"  git init -b main")
+
+    print()
+    print(f"✓ {full_name} scaffolded at {new_dir.relative_to(ws)}")
+    print()
+    print(f"Next steps:")
+    print(f"  1. cd {new_dir.relative_to(ws)}")
+    print(f"  2. Edit rasa.json + README.md + CLAUDE.md + content/")
+    print(f"  3. bin/check-manifest")
+    print(f"  4. gh repo create RasaOS/{new_folder} --private --description \"...\"")
+    print(f"  5. git add -A && git commit -m 'v0.1.0: initial' && git tag v0.1.0 && git push -u origin main && git push --tags")
+    print(f"  6. Register in elements/REGISTRY.md + elements/CHANGELOG.md")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""
+bin/lock-sequence — automate the canon version LOCK sequence.
+
+Per canon's documented lock-sequence (see canon/v<v>/canon/CHANGELOG.md
+"What remains for full lock"):
+
+  1. Flip CHANGELOG header from [vX.Y.Z — PENDING REVIEW] → [vX.Y.Z] · RELEASED
+  2. git tag vX.Y.Z on canon, push tags
+  3. (already done — ELEMENT_CONTRACT.md bumped + mirror synced)
+  4. (already done — mirror tagged)
+  5. Clone canon/v<X.Y>/ → canon/v<X.Y+1>/ as next working copy; bump VERSION
+  6. Update workspace CLAUDE.md "Read first" pointers from v<X.Y> → v<X.Y+1>
+     (manual — script prints the snippet)
+
+Usage:
+  bin/lock-sequence v1.2.0  [--dry-run]
+  (lock v1.2.0 + start v1.3.0)
+
+Cross-platform: pure Python standard library + git.
+"""
+
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+def find_workspace_root(start: Path) -> Path:
+    cur = start.resolve()
+    for _ in range(20):
+        rasa = cur / "rasa.json"
+        if rasa.is_file():
+            try:
+                if json.loads(rasa.read_text()).get("kind") == "tenant":
+                    return cur
+            except (json.JSONDecodeError, OSError):
+                pass
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return start
+
+
+def next_version(v: str) -> str:
+    """v1.2.0 → v1.3.0 (minor bump; matches canon convention)."""
+    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)$", v)
+    if not m:
+        sys.exit(f"ERROR: can't parse canon version: {v!r}")
+    major, minor, _patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    return f"v{major}.{minor + 1}.0"
+
+
+def git_in(repo: Path, *args: str, check: bool = True) -> str:
+    try:
+        result = subprocess.run(["git", "-C", str(repo), *args],
+            capture_output=True, text=True, check=check)
+        return result.stdout
+    except subprocess.CalledProcessError as exc:
+        sys.exit(f"ERROR: git {' '.join(args)} failed: {exc.stderr.strip()}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[1].strip())
+    parser.add_argument("version", help="Canon version to LOCK (e.g., v1.2.0). Will clone v1.2.0 → v1.3.0 as next working.")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--workspace", type=Path, default=Path.cwd())
+    args = parser.parse_args()
+
+    ws = find_workspace_root(args.workspace)
+    canon = ws / "canon"
+    if not canon.is_dir():
+        sys.exit(f"ERROR: {canon} not a directory")
+
+    v = args.version if args.version.startswith("v") else f"v{args.version}"
+    v_strip = v.lstrip("v")  # "1.2.0"
+    v_next = next_version(v)
+    v_next_strip = v_next.lstrip("v")
+
+    src_dir = canon / v
+    dst_dir = canon / v_next
+
+    print(f"lock-sequence:")
+    print(f"  Lock:  canon/{v}/  (current LOCKED + tagged)")
+    print(f"  Start: canon/{v_next}/  (cloned from {v}/, fresh IN PROGRESS)")
+    print()
+
+    if not src_dir.is_dir():
+        sys.exit(f"ERROR: source canon version folder {src_dir} not found")
+    if dst_dir.exists():
+        sys.exit(f"ERROR: target canon version folder {dst_dir} already exists; refuse to overwrite")
+
+    # Pre-flight: canon working tree clean, on main
+    status = git_in(canon, "status", "--porcelain").strip()
+    if status:
+        sys.exit(f"ERROR: canon working tree not clean:\n{status}\nCommit or stash before locking.")
+    branch = git_in(canon, "branch", "--show-current").strip()
+    if branch != "main":
+        sys.exit(f"ERROR: canon not on main (currently {branch})")
+
+    # Step 1: flip CHANGELOG header
+    changelog = canon / v / "canon" / "CHANGELOG.md"
+    if not changelog.is_file():
+        sys.exit(f"ERROR: {changelog} not found")
+    cl_text = changelog.read_text()
+    old_header = f"## [{v_strip} — PENDING REVIEW]"
+    new_header_re = re.compile(rf"## \[{re.escape(v_strip)} — PENDING REVIEW\]")
+    if not new_header_re.search(cl_text):
+        print(f"NOTE: CHANGELOG header doesn't say '[{v_strip} — PENDING REVIEW]'.")
+        print(f"      Either already locked or used a different format. Inspect:")
+        print(f"      {changelog}")
+        # Continue anyway — maybe just need the tag + clone.
+
+    if args.dry_run:
+        print("--dry-run: would now flip CHANGELOG header, tag canon, clone version folder.")
+        return 0
+
+    # Flip header (if found)
+    new_cl = re.sub(
+        rf"## \[{re.escape(v_strip)} — PENDING REVIEW\]",
+        f"## [{v_strip}] · RELEASED",
+        cl_text, count=1)
+    if new_cl != cl_text:
+        changelog.write_text(new_cl)
+        print(f"  [1] Flipped CHANGELOG header: PENDING REVIEW → RELEASED.")
+    else:
+        print(f"  [1] CHANGELOG header already in RELEASED state (or different format) — skipped.")
+
+    # Step 5 (before commit): clone version folder
+    shutil.copytree(src_dir, dst_dir)
+    print(f"  [5] Cloned canon/{v}/ → canon/{v_next}/")
+
+    # Bump VERSION file in the new folder
+    new_version_file = dst_dir / "canon" / "VERSION"
+    if new_version_file.is_file():
+        new_version_file.write_text(f"{v_next_strip}\n")
+        print(f"      Bumped canon/{v_next}/canon/VERSION → {v_next_strip}")
+
+    # Commit + tag + push
+    git_in(canon, "add", "-A")
+    msg = f"LOCK {v} + start {v_next}"
+    git_in(canon, "commit", "-m", msg)
+    git_in(canon, "tag", "-a", v, "-m", f"{v} LOCKED")
+    print(f"  [2] Committed + tagged canon {v}.")
+
+    git_in(canon, "push", "origin", "main")
+    git_in(canon, "push", "--tags", "origin")
+    print(f"      Pushed main + tag {v}.")
+
+    print()
+    print("=" * 70)
+    print("MANUAL FOLLOW-UP — workspace CLAUDE.md pointer bump:")
+    print("=" * 70)
+    print()
+    print(f"Edit ~/rAI/rasa-os/CLAUDE.md \"Read first (source of truth)\" section:")
+    print(f"  - Current LOCKED is now **{v}** (was the prior version)")
+    print(f"  - Current WORKING is now **{v_next} IN PROGRESS**")
+    print(f"  - Update item 2: canon/{v_next}/canon/STATUS.md (current working state)")
+    print(f"  - Update item 3: canon/{v}/canon/CHANGELOG.md (LOCKED)")
+    print(f"  - Update item 4: canon/{v}/canon/01_system_specification.html")
+    print(f"  - Update item 5: canon/{v}/elements/ELEMENT_CONTRACT.md")
+    print()
+    print(f"Edit canon/{v_next}/canon/STATUS.md:")
+    print(f"  - Set Verdict to '{v_next} IN PROGRESS'")
+    print()
+    print(f"Add canon/AUDIT.md entry under today's date for this lock.")
+    print()
+    print(f"(Already done from earlier in this session if you ran bin/lock-sequence")
+    print(f" mid-amendment-authoring: ELEMENT_CONTRACT.md bump + mirror sync + mirror tag.)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
