@@ -4,6 +4,28 @@ Reverse-chronological. Each entry is a version bump.
 
 ---
 
+## 1.3.0 — 2026-07-09
+
+### Added generic `/sync` + `/promote` skills + `/kit`-aware `bin/init`
+
+- Added the generic `/sync` (smart-pull) + `/promote` (smart-push) skills
+  under `content/skills/`, copied verbatim from the `rasa.domain.core`
+  reference. Both are domain-agnostic — they reference only the Element
+  contract (lockfile, `pinned_sha`, `overrides`, install policies, the `/kit`
+  stash), zero subject knowledge. `/sync` pulls upstream Element changes into
+  the consumer's `.claude/` copy; `/promote` pushes portable local
+  improvements back upstream as a PR. Both operate against the project's
+  persistent `kit/<element>/` clone.
+- Replaced `bin/init` with the `/kit`-aware generic installer: at install it
+  clones the Element source into `<target>/kit/<folder>/` (the `/kit` stash),
+  repoints `origin` at the real upstream repo, and pins the checkout to the
+  installed SHA — the reference clone that `/sync` + `/promote` operate on.
+- `content/skills/` registration note in `rasa.json` updated to document the
+  shipped `/sync` + `/promote`; policy left `opt-in` (scaffold — forks flip to
+  `directory-mirror` to install). No change to kind/name identity.
+
+---
+
 ## 1.2.0 — 2026-07-09
 
 ### Folded to `rasa.tenant.core` + absorbed the substrate tooling (canon SA-023)
