@@ -2,7 +2,7 @@
   "$schema": "https://rasa-os.github.io/schema/rasa.schema.v1.json",
   "contract_version": "1.3.0",
   "name": "rasa.tenant.core",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "kind": "tenant",
   "aliases": [
     "tenant-core"
@@ -22,7 +22,13 @@
   "rasa": {
     "role": "tenant-foundational-brain",
     "shape_pattern": "agnostic",
-    "note": "Canonical tenant template (folded from rasa.orchestrator.core per canon SA-023 — orchestrator kind removed; the tenant IS the orchestrator) per canon ELEMENT_CONTRACT.md v1.3+ §4 (required files) + §7 (install policies). v1.0.0 is the locked-down shape: forks may pin to this version and absorb later minor bumps as additive. shape_pattern='agnostic' here flags that this template does not commit to domain-shaped or structure-shaped; forks set their own. See content/SHAPE.md for the choice. Paired with rasa.domain.core v1.0.0 which serves the same role for the domain kind."
+    "note": "Canonical tenant template (folded from rasa.orchestrator.core per canon SA-023 — orchestrator kind removed; the tenant IS the orchestrator) per canon ELEMENT_CONTRACT.md v1.3+ §4 (required files) + §7 (install policies). v1.0.0 is the locked-down shape: forks may pin to this version and absorb later minor bumps as additive. shape_pattern='agnostic' here flags that this template does not commit to domain-shaped or structure-shaped; forks set their own. See content/SHAPE.md for the choice. Paired with rasa.domain.core v1.0.0 which serves the same role for the domain kind.",
+    "identity": {
+      "one_liner": "the foundational RasaOS tenant brain — the orchestrator a tenant installs by default",
+      "role": "tenant",
+      "subject": "being the tenant (the orchestrator): installing + coordinating modules and registering domains",
+      "goal": "bring being the tenant (the orchestrator): installing + coordinating modules and registering domains into a project as an installable RasaOS tenant"
+    }
   },
   "element": {
     "description": "Files mirrored into the install target per canon ELEMENT_CONTRACT.md §7. v1.0.0 ships all of these as opt-in scaffold — registered for check-manifest coverage but not installed automatically. Forks change policies as they populate content/, OR delete entries entirely for structure-shaped orchestrators that don't install at all.",
@@ -56,6 +62,12 @@
         "to": "content/NOTES.md",
         "policy": "opt-in",
         "note": "Authoring roadmap (candidate skills/rules/agents for the substrate-authoring tooling) absorbed from the retired rasa.orchestrator.workspace per canon SA-023. Not installed into consumer projects."
+      },
+      {
+        "from": "content/skills/whoami/",
+        "to": ".claude/skills/whoami/",
+        "policy": "directory-mirror",
+        "note": "Generic /whoami — states the composed RasaOS identity (canon SA-025)."
       }
     ]
   },
@@ -73,6 +85,12 @@
         "to": ".claude/rasa.lock.json",
         "policy": "init-only-with-sha",
         "note": "Stamped with Element HEAD commit SHA at init time. Lockfile shape per canon Spec §6. Substitutes {{ELEMENT_NAME}}, {{ELEMENT_KIND}}, {{ELEMENT_VERSION}}, {{ELEMENT_REPO}}, {{ELEMENT_BRANCH}}, {{ELEMENT_SHA}}, {{TODAY}} placeholders via bin/init's init-only-with-sha handler."
+      },
+      {
+        "from": "seed/rasa-deployment.md.template",
+        "to": ".claude/rasa-deployment.md",
+        "policy": "skip-if-exists",
+        "note": "The DEPLOYMENT identity layer (SA-025) — project-owned; what this project is, for whom, on what platform. bin/init generates the element layer (.claude/rasa-identity.md) from rasa.identity every install."
       }
     ]
   },

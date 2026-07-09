@@ -4,6 +4,12 @@ Reverse-chronological. Each entry is a version bump.
 
 ---
 
+## 1.3.1 — 2026-07-09
+
+### Element identity layer (canon SA-025)
+
+- Added `rasa.identity` ("the foundational RasaOS tenant brain — the orchestrator a tenant installs by default"); `bin/init` generates `.claude/rasa-identity.md` from it every install + stamps project-owned `.claude/rasa-deployment.md`; ships `/whoami`; CLAUDE.md "Who you are" header.
+
 ## 1.3.0 — 2026-07-09
 
 ### Added generic `/sync` + `/promote` skills + `/kit`-aware `bin/init`
