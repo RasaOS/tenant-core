@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""
+bin/build-tenant — scaffold a co-located tenant workspace (canon SA-022,
+reconciled to SA-023).
+
+A co-located tenant is a container directory holding its CODEBASE MEMBER REPOS
+as co-located siblings (`<namespace>-<name>`), each its own git repo. Per
+SA-023 the tenant root **IS** the orchestrator: `rasa.tenant.core` (the brain)
+installs at the tenant root (`.claude/`), optionally with a coordination module
+(`rasa.module.firm`/`company`/…) on top. There is NO separate orchestrator
+member — that was the pre-fold SA-022 model.
+
+This script writes the thin tenant config layer + declares the codebase member
+roster. It does NOT clone codebases or install Elements — those are follow-up
+steps it prints (the /create-tenant skill walks them).
+
+Usage:
+  bin/build-tenant <namespace> --dir <path> [options]
+
+Options:
+  --dir PATH            Target directory for the tenant (required).
+  --name NAME           rasa.json#name. Default: rasa.tenant.<namespace>.
+                        (Customer form: <publisher>.tenant.<id>.)
+  --brain ELEM          A coordination module installed at the tenant root ON TOP
+                        of rasa.tenant.core (e.g. rasa.module.firm,
+                        rasa.module.company). Optional — tenant.core alone is the
+                        base brain. Repeatable.
+  --member "name|role[|git_remote[|installed_element]]"   Repeatable. A codebase
+                        member. Pipe-delimited (SSH remotes contain ':'). Example:
+                          --member "vsi-web|web|git@github.com:Org/vsi-web.git"
+                          --member "vsi-devops|devops||rasa.domain.devops"
+  --purpose TEXT        tenant.purpose. Default: company-engineering-substrate.
+  --owner NAME          tenant.owner. Default: $USER.
+  --contract-version V  rasa.json#contract_version. Default: 1.3.0 (the fleet
+                        convention until the coordinated v1.4.0 lock).
+  --dry-run             Print what would be written; don't write.
+
+Example:
+  bin/build-tenant vsi --dir /Volumes/256GB/vsi-ops --brain rasa.module.company \\
+    --member "vsi-web|web|git@github.com:Vehicle-Safety-Inspections/vsi-web.git" \\
+    --member "vsi-ios|ios|git@github.com:Vehicle-Safety-Inspections/vsi-ios.git" \\
+    --member "vsi-devops|devops||rasa.domain.devops"
+
+Produces:
+  <dir>/                          co-located tenant (git init -b main)
+  ├── rasa.json                   kind:tenant, tenant.layout=co-located,
+  │                               tenant.members[] (codebase members only)
+  ├── CLAUDE.md                   thin orientation — the tenant root IS the
+  │                               orchestrator (tenant.core brain at .claude/)
+  ├── README.md
+  ├── .gitignore                  ignores the member repos (<ns>-*/)
+  └── VERSION
+  (NO orchestrator member folder — the root is the orchestrator per SA-023.)
+
+Cross-platform: pure Python standard library + git.
+Canon: SA-022 (co-located tenant workspace) + SA-023 (tenant IS the orchestrator);
+ELEMENT_CONTRACT §8b.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+
+# The base tenant brain, always installed at the tenant root (SA-023 FD-003).
+TENANT_BRAIN = "rasa.tenant.core"
+
+
+def parse_member(spec):
+    # name|role[|git_remote[|installed_element]]  (pipe-delimited: SSH remotes contain ':')
+    parts = spec.split("|")
+    name = parts[0]
+    role = parts[1] if len(parts) > 1 and parts[1] else "other"
+    entry = {"name": name, "role": role}
+    if len(parts) > 2 and parts[2]:
+        entry["git_remote"] = parts[2]
+    if len(parts) > 3 and parts[3]:
+        entry["installed_element"] = parts[3]
+    return entry
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[1].strip())
+    p.add_argument("namespace", help="Tenant namespace, e.g. 'vsi' (supplies the <ns>- member prefix)")
+    p.add_argument("--dir", required=True, help="Target directory for the tenant")
+    p.add_argument("--name", default=None, help="rasa.json#name (default rasa.tenant.<ns>)")
+    p.add_argument("--brain", action="append", default=[],
+                   help="Coordination module installed at the root on top of rasa.tenant.core (repeatable)")
+    p.add_argument("--member", action="append", default=[],
+                   help="name|role[|git_remote[|installed_element]] (repeatable) — codebase members")
+    p.add_argument("--purpose", default="company-engineering-substrate")
+    p.add_argument("--owner", default=os.environ.get("USER", "owner"))
+    p.add_argument("--contract-version", default="1.3.0")
+    p.add_argument("--dry-run", action="store_true")
+    args = p.parse_args()
+
+    ns = args.namespace
+    if not re.match(r"^[a-z][a-z0-9-]*$", ns):
+        sys.exit(f"ERROR: namespace must be lowercase [a-z0-9-] (got {ns!r})")
+    name = args.name or f"rasa.tenant.{ns}"
+    tenant_dir = os.path.abspath(args.dir)
+
+    # member roster: codebase members only — the tenant root is the orchestrator (SA-023),
+    # so there is no <ns>-cto orchestrator member.
+    members = [parse_member(spec) for spec in args.member]
+    # CW-002: member folder/repo naming is <ns>-<name>; the tenant gitignores <ns>-*/.
+    # Auto-prepend the namespace prefix to any member name lacking it, so every member
+    # is covered by the .gitignore (CW-001 git-per-repo) and matches CW-002 naming.
+    for m in members:
+        if not m["name"].startswith(f"{ns}-"):
+            m["name"] = f"{ns}-{m['name']}"
+
+    # requires.elements: the brain (always) + coordination modules + member-installed Elements.
+    requires_elements = [{"name": TENANT_BRAIN}]
+
+    def add_req(el):
+        if el and not any(r["name"] == el for r in requires_elements):
+            requires_elements.append({"name": el})
+
+    for b in args.brain:
+        add_req(b)
+    for m in members:
+        add_req(m.get("installed_element"))
+
+    rasa = {
+        "$schema": "https://rasa-os.github.io/schema/rasa.schema.v1.json",
+        "contract_version": args.contract_version,
+        "name": name,
+        "version": "0.1.0",
+        "kind": "tenant",
+        "aliases": [os.path.basename(tenant_dir), f"tenant-{ns}"],
+        "description": (
+            f"Co-located tenant workspace for {ns} (canon SA-022/SA-023). The tenant root IS "
+            f"the orchestrator ({TENANT_BRAIN} brain installed at .claude/); holds its codebase "
+            f"member repos as co-located siblings, each its own git repo."
+        ),
+        "tier": "Pro",
+        "tenant": {
+            "purpose": args.purpose,
+            "layout": "co-located",
+            "owner": args.owner,
+            "members": members,
+        },
+        "requires": {"elements": requires_elements},
+        "rasa": {
+            "namespace": ns,
+            "role": "co-located-tenant",
+            "note": (
+                "Co-located workspace per SA-022 CW-001..CW-006, reconciled to SA-023: the tenant "
+                "root IS the orchestrator (rasa.tenant.core installed at .claude/, optionally with a "
+                "coordination module on top) — NO separate orchestrator member. Each member is its "
+                "own git repo (git-per-repo sync); the tenant gitignores every member and versions "
+                "only this thin config layer. contract_version tracks the fleet convention."
+            ),
+        },
+    }
+
+    brain_stack = [TENANT_BRAIN] + list(args.brain)
+    print(f"build-tenant: {name}  (namespace {ns}, layout co-located)")
+    print(f"  dir:     {tenant_dir}")
+    print(f"  brain:   {' + '.join(brain_stack)}  (installed at the tenant root — the root IS the orchestrator)")
+    print(f"  members: {', '.join(m['name'] + ' (' + m['role'] + ')' for m in members) if members else '(none yet)'}")
+    print()
+
+    if args.dry_run:
+        print("--dry-run: rasa.json that would be written:\n")
+        print(json.dumps(rasa, indent=2))
+        return 0
+
+    if os.path.exists(tenant_dir) and os.listdir(tenant_dir):
+        sys.exit(f"ERROR: {tenant_dir} exists and is not empty; refuse to overwrite")
+    os.makedirs(tenant_dir, exist_ok=True)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tenant_dir, check=True)
+
+    with open(os.path.join(tenant_dir, "rasa.json"), "w") as f:
+        json.dump(rasa, f, indent=2)
+        f.write("\n")
+    with open(os.path.join(tenant_dir, "VERSION"), "w") as f:
+        f.write("0.1.0\n")
+
+    member_lines = "\n".join(
+        f"| `{m['name']}` | {m['role']} | {m.get('installed_element','—')} |" for m in members
+    ) or "| _(none yet — add codebase members)_ | | |"
+    with open(os.path.join(tenant_dir, "CLAUDE.md"), "w") as f:
+        f.write(f"""# CLAUDE.md — `{name}` (co-located tenant)
+
+This folder **is** the `{name}` tenant (canon SA-018 + SA-022/SA-023 co-located
+workspace). **The tenant root IS the orchestrator** — `{TENANT_BRAIN}` (the
+brain) installs here at `.claude/`{(' with ' + ' + '.join(args.brain) + ' on top') if args.brain else ''}.
+It holds its **codebase member repos** as co-located siblings; each is its own
+git repo. There is no separate orchestrator member — open Claude **here, at the
+root** for orchestration work.
+
+## Members (`rasa.json#tenant.members`)
+
+| Member | Role | Installed Element |
+|---|---|---|
+{member_lines}
+
+## How this tenant works
+
+- The tenant root is the brain: `{TENANT_BRAIN}` installed at `.claude/`. It holds
+  macro architectural truth across the members and can create + register new ones
+  (`/new-repo`, `/register`).
+- Each `{ns}-*` folder is its own git repo with its own remote; the tenant
+  gitignores them (git-per-repo is the sync — SA-022 CW-001).
+- Canon Elements install INTO members: a codebase member ← its `rasa.domain.*`.
+  The root (brain + coordination modules) is the one exception — those install at
+  the tenant root, not into a member.
+
+See canon Spec Part X §54 (SA-022/SA-023) + ELEMENT_CONTRACT §8b.
+""")
+    with open(os.path.join(tenant_dir, "README.md"), "w") as f:
+        f.write(f"""# {name}
+
+Co-located tenant workspace (canon SA-022/SA-023). The tenant root IS the
+orchestrator (`{TENANT_BRAIN}` brain at `.claude/`); codebase member repos live
+here as co-located siblings.
+
+See [CLAUDE.md](CLAUDE.md) and `rasa.json#tenant.members`.
+""")
+    with open(os.path.join(tenant_dir, ".gitignore"), "w") as f:
+        f.write(f"""# {name} — gitignore
+# Co-located tenant (SA-022/SA-023): each member repo is its own git repo + remote.
+# The tenant versions only this thin config layer; members are git-per-repo.
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# ---- member repos (each its own git repo) ----
+{ns}-*/
+""")
+
+    print(f"✓ scaffolded co-located tenant at {tenant_dir}")
+    print()
+    print("Next steps:")
+    print(f"  1. Install the tenant brain at the ROOT (the root is the orchestrator):")
+    print(f"       <path-to-{TENANT_BRAIN}>/bin/init {tenant_dir}")
+    for b in args.brain:
+        print(f"       then install {b} at the root: <path-to-{b}>/bin/init {tenant_dir}")
+    for m in members:
+        rem = m.get("git_remote")
+        el = m.get("installed_element")
+        if rem:
+            print(f"  •  clone member {m['name']} as a sibling:")
+            print(f"       git clone {rem} {os.path.join(tenant_dir, m['name'])}")
+        else:
+            print(f"  •  create member {m['name']} (role {m['role']}): /new-repo (from the root) or gh repo create")
+        if el:
+            print(f"       then install {el} INTO {m['name']}/")
+    print(f"  2. Register members in rasa.json#tenant.members (/register).")
+    print(f"  3. gh repo create for the tenant + each member; push.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

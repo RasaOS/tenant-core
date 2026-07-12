@@ -1,8 +1,35 @@
-# CHANGELOG — `rasa.orchestrator.core`
+# CHANGELOG — `rasa.tenant.core`
 
 Reverse-chronological. Each entry is a version bump.
 
 ---
+
+## 1.4.0 — 2026-07-12
+
+### The `create-*` authoring skills + a co-located tenant scaffolder
+
+The tenant brain gains the standardized, UI-drivable Element-authoring surface
+(SA-023 folded the substrate-authoring tooling into the tenant brain):
+
+- **`/create-domain`** + **`/create-module`** — scaffold a new domain / module
+  Element the standardized way: interview → `bin/new-element` → fill `rasa.json`
+  → register content in `element.files[]` → `git add` → `check-manifest` +
+  `check-shape` → first ship → register. Parameterized for a UI; battle-hardened
+  via two adversarial audit rounds (fixed real runtime traps: vacuous-green
+  `check-manifest` before `git add`, first-ship `origin` wiring, SHAPE.md
+  delete-without-deregister, bare-`bin/` path). Instruct declaring
+  `contract_version: 1.3.0` (fleet convention until the v1.4.0 lock).
+- **`/create-tenant`** + **`bin/build-tenant`** (new) — scaffold a post-SA-023
+  co-located tenant: the tenant **root IS the orchestrator** (`rasa.tenant.core`
+  at `.claude/` + optional coordination modules), codebase members as gitignored
+  siblings (`<ns>-<name>`, auto-prefixed), **no `<ns>-cto` orchestrator member**.
+  Supersedes the SA-022-era `/build-tenant` (still shipped in `module-workspace`,
+  pending removal). Adversarially reviewed (SA-023/CW + tooling fidelity clean).
+- **`bin/new-element`** — doc-only fix: stale docstring examples (retired
+  `orchestrator` kind), `~/rAI/rasa-os/` legacy paths, hardcoded contract version;
+  logic unchanged (`py_compile` clean).
+- CHANGELOG title corrected `rasa.orchestrator.core` → `rasa.tenant.core` (stale
+  from the SA-023 rename).
 
 ## 1.3.1 — 2026-07-09
 

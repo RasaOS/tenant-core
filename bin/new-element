@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
 bin/new-element — scaffold a new Element by forking from the
-appropriate canonical template (domain-core for kind=domain;
-orchestrator-core for kind=orchestrator). Updates rasa.json,
-README.md, CLAUDE.md placeholders for the new Element's identity.
+canonical template (domain-core — every scaffoldable kind forks
+from it). Updates rasa.json + README.md placeholders for the new
+Element's identity. (CLAUDE.md is inherited as-is; authoring it is a TODO.)
 
 Usage:
   bin/new-element <kind> <name> [--description "..."] [--dry-run]
 
 Example:
   bin/new-element domain health
-  bin/new-element orchestrator clinic --description "Multi-patient coordination for clinics"
-  bin/new-element module tasks --description "Portable task-management lifecycle, mountable into any domain/orchestrator"
+  bin/new-element frontend clinic --description "Clinic-facing vertical frontend"
+  bin/new-element module tasks --description "Portable task-management lifecycle, mountable into any domain/tenant"
 
 Produces:
   elements/<kind>-<name>/   (fresh fork of template, .git initialized,
@@ -156,7 +156,7 @@ def main():
     rasa["version"] = "0.1.0"
     rasa["description"] = description
     rasa["aliases"] = [new_folder]
-    rasa["kind"] = args.kind  # Override template's kind (template was domain/orchestrator)
+    rasa["kind"] = args.kind  # Override template's kind (template is domain-core)
     # Apply per-kind defaults
     kdefaults = KIND_DEFAULTS.get(args.kind, {})
     if "tier" in kdefaults:
@@ -178,7 +178,7 @@ def main():
         rasa["source"]["repo"] = f"https://github.com/RasaOS/{new_folder}"
     # Module kind is the only kind permitted to declare requires.parent_kind
     # (canon Spec §6 / schema). Seed the default (mountable into both
-    # domain + orchestrator parents) so the shell validates as a real module.
+    # domain + tenant parents) so the shell validates as a real module.
     if args.kind in PARENT_KIND_KINDS:
         req = rasa.get("requires")
         if not isinstance(req, dict):
@@ -201,7 +201,7 @@ Reverse-chronological. Each entry is a version bump.
 
 ## 0.1.0 — INITIAL (TODO: date)
 
-### Forked from rasa.{args.kind}.core
+### Forked from rasa.{TEMPLATES[args.kind].replace('-', '.')}
 
 Scaffolded via `bin/new-element {args.kind} {args.name}`. Inherits
 canon-required files (§4) + Apache-2.0 LICENSE + bin/init +
@@ -231,8 +231,8 @@ should delete after picking a shape pattern).
 **Canonical name:** `{full_name}`
 **Repo / folder:** `{new_folder}`
 **Kind:** `{args.kind}` (canon Spec §6)
-**Contract:** Element Contract v1.3.0
-**Version:** 0.1.0 (initial; scaffolded from `rasa.{args.kind}.core`)
+**Contract:** Element Contract v{json.loads((template_dir/'rasa.json').read_text()).get('contract_version','?')}
+**Version:** 0.1.0 (initial; scaffolded from `rasa.{TEMPLATES[args.kind].replace('-', '.')}`)
 **Status:** TODO — describe what this Element does + how it fits.
 
 ## What this is
@@ -241,7 +241,7 @@ should delete after picking a shape pattern).
 
 ## Forked from
 
-`rasa.{args.kind}.core` v{json.loads((template_dir/'rasa.json').read_text()).get('version','?')}. See the template's `content/SHAPE.md` for pattern choices. Delete that file once you pick a pattern and replace with `content/README.md`.
+`rasa.{TEMPLATES[args.kind].replace('-', '.')}` v{json.loads((template_dir/'rasa.json').read_text()).get('version','?')}. See the template's `content/SHAPE.md` for pattern choices. Delete that file once you pick a pattern and replace with `content/README.md`.
 
 ## TODO
 
@@ -252,9 +252,9 @@ should delete after picking a shape pattern).
 
 ## See also
 
-- `~/rAI/rasa-os/elements/{template_folder}/` — the template this Element forked from
+- `elements/{template_folder}/` — the template this Element forked from
 - Canon Spec §6 — the `{args.kind}` kind definition
-- `~/rAI/rasa-os/elements/REGISTRY.md` — register this Element here on first ship
+- `elements/REGISTRY.md` — register this Element here on first ship
 """
         readme_path.write_text(readme_text)
         print(f"  Reset README.md to fresh-fork framing")
@@ -268,11 +268,12 @@ should delete after picking a shape pattern).
     print()
     print(f"Next steps:")
     print(f"  1. cd {new_dir.relative_to(ws)}")
-    print(f"  2. Edit rasa.json + README.md + CLAUDE.md + content/")
-    print(f"  3. bin/check-manifest")
-    print(f"  4. gh repo create RasaOS/{new_folder} --private --description \"...\"")
-    print(f"  5. git add -A && git commit -m 'v0.1.0: initial' && git tag v0.1.0 && git push -u origin main && git push --tags")
-    print(f"  6. Register in elements/REGISTRY.md + elements/CHANGELOG.md")
+    print(f"  2. Edit rasa.json (+ register content in element.files[]) + README.md + CLAUDE.md + content/")
+    print(f"  3. git add -A   # stage first — check-manifest/check-shape inventory git-tracked files only")
+    print(f"  4. bin/check-manifest && bin/check-shape")
+    print(f"  5. git commit -m 'v0.1.0: initial' && git tag v0.1.0")
+    print(f"  6. gh repo create RasaOS/{new_folder} --private --source=. --remote=origin --push && git push --tags")
+    print(f"  7. Register in elements/REGISTRY.md + elements/CHANGELOG.md")
     return 0
 
 
