@@ -4,6 +4,18 @@ Reverse-chronological. Each entry is a version bump.
 
 ---
 
+## 1.4.1 — 2026-07-12
+
+### Fix: `kind` corrected `tenant` → `core` (SA-023 FD-003)
+
+`rasa.tenant.core` is a **`core`-kind singleton** — the `core` kind hosts
+`rasa.core` + `rasa.tenant.core` (SA-023 FD-003). The manifest wrongly declared
+`kind: "tenant"` (pre-existing drift, carried through v1.4.0); corrected to
+`core`. The `.tenant.` qualifier in the *name* encodes the brain's ROLE, not a
+`tenant`-kind membership (a §3 naming exception). `content/` is present (required
+for the `core` kind, §4). Schema-valid. Surfaced during the `rasa.tenant.kernel`
+(SA-035) review.
+
 ## 1.4.0 — 2026-07-12
 
 ### The `create-*` authoring skills + a co-located tenant scaffolder

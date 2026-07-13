@@ -2,8 +2,8 @@
   "$schema": "https://rasa-os.github.io/schema/rasa.schema.v1.json",
   "contract_version": "1.3.0",
   "name": "rasa.tenant.core",
-  "version": "1.4.0",
-  "kind": "tenant",
+  "version": "1.4.1",
+  "kind": "core",
   "aliases": [
     "tenant-core"
   ],
