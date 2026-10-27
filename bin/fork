@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""
+bin/fork — turn a fresh copy of this template into a new Element's identity.
+
+Usage:
+  bin/fork <kind> <name>        e.g.  bin/fork module tasks
+
+Run it once, in a fresh copy of the template (a clone, or `galt element new`,
+which makes the copy and runs this for you). Never run it in the template's own
+checkout: it deletes files. It rewrites:
+
+  rasa.json                   name rasa.<kind>.<name>, kind, version 0.1.0, aliases,
+                              source.repo, and a placeholder description
+  VERSION                     0.1.0
+  .claude-plugin/plugin.json  name rasa-<kind>-<name>, version, description
+
+and deletes the fork-time guides this template's README tells a fork to delete
+(they are also removed from rasa.json, so bin/check-manifest still passes).
+
+It changes nothing else and refuses to run twice. Cross-platform: pure Python
+standard library.
+"""
+
+import json
+import os
+import re
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+KINDS = ("domain", "module", "tenant")
+NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
+# The fork-time guides the README says to delete on fork.
+GUIDES = ["content/SHAPE.md"]
+
+
+def die(msg):
+    print("bin/fork: " + msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def read_json(rel):
+    path = os.path.join(ROOT, rel)
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError) as exc:
+        die("could not read %s: %s" % (rel, exc))
+
+
+def write_json(rel, data):
+    with open(os.path.join(ROOT, rel), "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+
+if len(sys.argv) != 3 or sys.argv[1] not in KINDS or not NAME_RE.match(sys.argv[2]):
+    die("usage: bin/fork <%s> <name>   (name: lowercase letters, digits, dashes)" % "|".join(KINDS))
+kind, name = sys.argv[1], sys.argv[2]
+
+manifest = read_json("rasa.json")
+if not manifest.get("name", "").endswith(".core"):
+    die("rasa.json is already a fork (name %s); bin/fork runs once, on the template" % manifest.get("name"))
+
+plugin = read_json(".claude-plugin/plugin.json")
+repo = "%s-%s" % (kind, name)
+description = "A %s Element: %s. Replace this line with what it carries." % (kind, name)
+
+manifest["name"] = "rasa.%s.%s" % (kind, name)
+manifest["kind"] = kind
+manifest["version"] = "0.1.0"
+manifest["aliases"] = [repo]
+manifest["description"] = description
+manifest.setdefault("source", {})["repo"] = "https://github.com/RasaOS/%s" % repo
+
+removed = []
+for rel in GUIDES:
+    path = os.path.join(ROOT, rel)
+    if os.path.exists(path):
+        os.remove(path)
+        removed.append(rel)
+for section in ("element", "seed"):
+    files = manifest.get(section, {}).get("files")
+    if isinstance(files, list):
+        manifest[section]["files"] = [e for e in files if e.get("from", "").rstrip("/") not in removed]
+write_json("rasa.json", manifest)
+
+with open(os.path.join(ROOT, "VERSION"), "w") as f:
+    f.write("0.1.0\n")
+plugin["name"] = "rasa-%s-%s" % (kind, name)
+plugin["version"] = "0.1.0"
+plugin["description"] = description
+write_json(".claude-plugin/plugin.json", plugin)
+
+print("forked %s: rasa.%s.%s v0.1.0" % (repo, kind, name))
+for rel in removed:
+    print("  deleted the fork-time guide %s" % rel)
+print("next: describe it in rasa.json and prompt.md, populate content/, then bin/check-manifest" + (" && bin/check-shape" if os.path.exists(os.path.join(ROOT, "bin", "check-shape")) else ""))
