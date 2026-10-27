@@ -1,0 +1,6 @@
+{
+  "name": "rasa-tenant-core",
+  "version": "1.4.1",
+  "description": "The foundational tenant brain/template installed into every tenant by default (the renamed rasa.orchestrator.core). Also carries the substrate-authoring tooling absorbed from the retired rasa.orchestrator.workspace: new-element, ship-element, refresh-registry, scan-drift, audit-substrate, lock-sequence, audit-canon-tasks.",
+  "skills": "./content/skills/"
+}

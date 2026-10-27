@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """
-bin/check-manifest — verify rasa.json is a complete inventory of the Element.
+bin/check-manifest — verify rasa.json is a complete inventory of the Element, and that it loads as a plugin.
 
 bin/init and /sync are manifest-driven: they install exactly what rasa.json
 declares. If a file is committed to content/ or seed/ but never registered
 in rasa.json, it silently never ships — and nothing else catches it. This
 script does.
 
-Two checks, both directions:
+Two inventory checks, both directions:
   1. Coverage — every git-tracked file under content/ and seed/ is
      registered in rasa.json (matched by an exact element.files /
      seed.files 'from', or by an ancestor directory entry).
   2. Dangling — every rasa.json 'from' points at a path that exists.
+
+Third check (the loadable plugin, galt ADR 0064): .claude-plugin/plugin.json
+exists, parses, is named rasa-<kind>-<name> after rasa.json's name, carries
+rasa.json's version, and every component path it declares is a folder that
+exists. Without it a session cannot load this Element (it fails closed).
 
 Run it before tagging an Element release, or wire it into CI.
 
@@ -76,8 +81,31 @@ def covered(path):
 
 
 uncovered = sorted(p for p in tracked if not covered(p))
+
+# Third check: the loadable plugin manifest.
+plugin_problems = []
+PLUGIN = os.path.join(REPO_ROOT, ".claude-plugin", "plugin.json")
+if not os.path.isfile(PLUGIN):
+    plugin_problems.append(".claude-plugin/plugin.json is missing (a session cannot load this Element without it)")
+else:
+    try:
+        plugin = json.load(open(PLUGIN))
+    except (OSError, ValueError) as exc:
+        plugin = None
+        plugin_problems.append(".claude-plugin/plugin.json does not parse: %s" % exc)
+    if isinstance(plugin, dict):
+        want = str(manifest.get("name", "")).replace(".", "-")
+        if plugin.get("name") != want:
+            plugin_problems.append("plugin.json name is %r, rasa.json says it should be %r" % (plugin.get("name"), want))
+        if plugin.get("version") != manifest.get("version"):
+            plugin_problems.append("plugin.json version %r differs from rasa.json version %r" % (plugin.get("version"), manifest.get("version")))
+        for key in ("skills", "agents", "commands"):
+            val = plugin.get(key)
+            for rel in ([val] if isinstance(val, str) else val if isinstance(val, list) else []):
+                if not os.path.isdir(os.path.join(REPO_ROOT, rel)):
+                    plugin_problems.append("plugin.json %s points at %s, which is not a folder" % (key, rel))
 dangling = sorted(f for f in froms if not os.path.exists(os.path.join(REPO_ROOT, f)))
-problems = len(uncovered) + len(dangling)
+problems = len(uncovered) + len(dangling) + len(plugin_problems)
 
 print("bin/check-manifest — rasa.json coverage")
 print()
@@ -94,9 +122,15 @@ if dangling:
         print("  x  %s" % f)
     print()
 
+if plugin_problems:
+    print("PLUGIN — the loadable manifest is wrong:")
+    for p in plugin_problems:
+        print("  x  %s" % p)
+    print()
+
 if problems == 0:
     print("OK   rasa.json is a complete inventory.")
-    print("     %d tracked files under content/ + seed/, all registered." % len(tracked))
+    print("     %d tracked files under content/ + seed/, all registered; plugin.json is loadable." % len(tracked))
     sys.exit(0)
 
 print("FAIL %d problem(s) — rasa.json and the Element tree have drifted." % problems)
